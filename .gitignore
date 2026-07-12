@@ -1,0 +1,9 @@
+.DS_Store
+.env
+raw/
+clips/
+reports/
+state.db
+__pycache__/
+*.pyc
+.venv/
