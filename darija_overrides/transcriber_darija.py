@@ -9,23 +9,44 @@ uses the standard transformers + PEFT loading path the model card itself
 documents, running on MPS/CUDA/CPU (faster-whisper's engine doesn't
 support Metal, but plain transformers does via torch's MPS backend).
 
+Requests word-level timestamps rather than the ASR pipeline's
+`chunk_length_s`-based windowing: a real 40-min video test showed
+`chunk_length_s` (transformers itself flags this as "very experimental
+with seq2seq models") collapsing the whole transcript into 1-2 giant
+segments instead of per-sentence ones. Word-level timestamps are reliable;
+`_group_words_into_segments` re-groups them into phrase-sized segments at
+natural pauses, which is what both highlight scoring and caption burn-in
+actually need. That non-chunked code path also needs a real audio file
+(WAV) rather than an mp4 container — `_extract_audio_wav` handles that.
+
 Per CLAUDE.md's hard constraint, generic Whisper is a fallback only, never
-silently primary: if the Darija model's output looks garbled (empty, or a
-repetition loop — a known Whisper hallucination failure mode, more common
-on heavy Darija/French code-switching per the architecture doc), this
-falls back to the vendored faster-whisper transcriber forced to
+silently primary: if the Darija model's output looks garbled (empty, a
+repetition loop, a repeated-character hallucination run, or too few
+segments for the audio's length — all failure modes seen in testing, more
+common on heavy Darija/French code-switching per the architecture doc),
+this falls back to the vendored faster-whisper transcriber forced to
 large-v3, and logs the fallback with the media path so it's visible in
 pipeline logs.
 """
 
 import os
-from typing import Dict, Optional
+import re
+import subprocess
+import tempfile
+from typing import Dict, List, Optional
 
 import shorts_generator.local.transcriber as _vendor
 
 BASE_MODEL_ID = "openai/whisper-large-v3-turbo"
 DARIJA_ADAPTER_ID = "anaszil/whisper-large-v3-turbo-darija"
 FALLBACK_WHISPER_MODEL = os.environ.get("FALLBACK_WHISPER_MODEL", "large-v3")
+
+# Word-grouping heuristic: break a new segment at a pause longer than
+# MAX_WORD_GAP_SECONDS, or once a segment would exceed MAX_SEGMENT_SECONDS
+# — mirrors faster-whisper's own natural-pause segmentation so highlight
+# scoring and caption burn-in get similarly-sized segments either way.
+MAX_WORD_GAP_SECONDS = 0.6
+MAX_SEGMENT_SECONDS = 12.0
 
 _VENDOR_TRANSCRIBER_MODULE = "shorts_generator.local.transcriber"
 
@@ -68,52 +89,134 @@ def _load_pipeline():
     model = model.merge_and_unload()
     model.to(device)
 
+    # No chunk_length_s: relies on the model's own long-form generate()
+    # chunking instead of the pipeline's experimental external windowing.
     _pipe = pipeline(
         "automatic-speech-recognition",
         model=model,
         tokenizer=processor.tokenizer,
         feature_extractor=processor.feature_extractor,
         device=device,
-        chunk_length_s=30,
     )
     return _pipe
 
 
+def _extract_audio_wav(media_path: str) -> str:
+    """ffmpeg-extract mono 16kHz WAV. The ASR pipeline's non-chunked code
+    path (needed for word-level timestamps) fails to container-sniff .mp4
+    inputs directly — a plain WAV sidesteps that.
+    """
+    fd, wav_path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-i",
+            media_path,
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+            wav_path,
+        ],
+        check=True,
+    )
+    return wav_path
+
+
+def _group_words_into_segments(word_chunks: List[Dict]) -> List[Dict]:
+    """Re-group word-level ASR chunks into phrase-sized segments, breaking
+    at pauses > MAX_WORD_GAP_SECONDS or once a segment would run past
+    MAX_SEGMENT_SECONDS.
+    """
+    segments: List[Dict] = []
+    current_words: List[str] = []
+    current_start: Optional[float] = None
+    prev_end: Optional[float] = None
+
+    for chunk in word_chunks:
+        start, end = chunk["timestamp"]
+        text = (chunk["text"] or "").strip()
+        if not text or start is None:
+            continue
+        if end is None:
+            end = start
+
+        if current_start is None:
+            current_start, current_words, prev_end = start, [text], end
+            continue
+
+        gap = start - prev_end
+        would_be_duration = end - current_start
+        if gap > MAX_WORD_GAP_SECONDS or would_be_duration > MAX_SEGMENT_SECONDS:
+            segments.append(
+                {
+                    "start": current_start,
+                    "end": prev_end,
+                    "text": " ".join(current_words),
+                }
+            )
+            current_start, current_words = start, [text]
+        else:
+            current_words.append(text)
+        prev_end = end
+
+    if current_words:
+        segments.append(
+            {"start": current_start, "end": prev_end, "text": " ".join(current_words)}
+        )
+    return segments
+
+
 def _run_darija_transcription(media_path: str, language: Optional[str]) -> Dict:
     pipe = _load_pipeline()
-    generate_kwargs = {"language": language} if language else {}
-    result = pipe(media_path, return_timestamps=True, generate_kwargs=generate_kwargs)
-
-    segments = []
-    for chunk in result.get("chunks", []):
-        start, end = chunk["timestamp"]
-        if start is None or end is None:
-            continue
-        segments.append(
-            {
-                "start": float(start),
-                "end": float(end),
-                "text": (chunk["text"] or "").strip(),
-            }
+    wav_path = _extract_audio_wav(media_path)
+    try:
+        generate_kwargs = {"language": language} if language else {}
+        result = pipe(
+            wav_path, return_timestamps="word", generate_kwargs=generate_kwargs
         )
+    finally:
+        os.remove(wav_path)
 
+    segments = _group_words_into_segments(result.get("chunks", []))
     duration = segments[-1]["end"] if segments else 0.0
     return {"duration": duration, "segments": segments}
 
 
+_REPEATED_CHAR_RUN = re.compile(r"(.)\1{9,}")
+
+
 def _looks_garbled(transcript: Dict) -> bool:
-    """Empty output, or a back-to-back repetition loop (Whisper's classic
-    hallucination artifact) counts as garbled.
-    # ponytail: two heuristics, not a full quality classifier — good enough
-    # to catch the failure mode the architecture doc calls out; revisit if
-    # real Darija runs show a different garbling pattern.
+    """Flags known Whisper failure modes seen in testing: empty output, a
+    back-to-back segment repetition loop, a 10+ repeated-character run
+    within one segment (both classic hallucination artifacts), or too few
+    segments for the audio's length (segmentation collapsed into a few
+    giant blobs instead of per-sentence chunks — the actual bug a real
+    40-min video test surfaced).
+    # ponytail: heuristics, not a full quality classifier — good enough to
+    # catch what's been seen; revisit if real Darija runs show a different
+    # garbling pattern.
     """
     segments = transcript.get("segments", [])
     non_empty = [s for s in segments if s["text"].strip()]
     if not non_empty:
         return True
+
     repeats = sum(1 for a, b in zip(non_empty, non_empty[1:]) if a["text"] == b["text"])
-    return len(non_empty) >= 4 and repeats / len(non_empty) > 0.3
+    if len(non_empty) >= 4 and repeats / len(non_empty) > 0.3:
+        return True
+
+    duration = transcript.get("duration", 0.0)
+    if duration > 60 and len(non_empty) / (duration / 60.0) < 2:
+        return True
+
+    return any(_REPEATED_CHAR_RUN.search(s["text"]) for s in non_empty)
 
 
 def _fallback_transcribe(media_path: str, language: Optional[str]) -> Dict:
