@@ -2,3 +2,13 @@ PyYAML==6.0.3
 pytest==9.1.1
 black==26.5.1
 ruff==0.15.21
+
+# vendor/ai-youtube-shorts-generator local-mode deps (--mode local only; we
+# never use its api mode / MuAPI, and we override local/llm.py's OpenAI/Gemini
+# calls with Ollama per CLAUDE.md — see darija_overrides/ once that lands).
+yt-dlp>=2024.1.1
+faster-whisper>=1.0.0
+# Pinned <5: opencv-python 5.0.0.93 ships without cv2.CascadeClassifier on
+# this machine (arm64/Python 3.14), which breaks local/clipper.py's face
+# tracking. 4.x has the full objdetect bindings.
+opencv-python<5
