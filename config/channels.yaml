@@ -1,4 +1,4 @@
 # Source channels for the watcher to poll (architecture doc §3.1).
 # channel_id: YouTube channel ID (starts with "UC..."), not the @handle.
 channels:
-  - channel_id: "UCxxxxxxxxxxxxxxxxxxxxxx"
+  - channel_id: "UCkax8bjMiSlC05JeXZSUKaQ"
