@@ -1,6 +1,6 @@
 # Progress
 
-## Status: watcher merged, base repo vendored, Ollama LLM override built, on branch `stage/llm-ollama-override`
+## Status: watcher merged, base repo vendored, both LLM + transcriber overrides built, on branch `stage/transcriber-darija`
 
 - `main`: watcher stage merged (`243ad1d`). Has `db.py`, `config/channels.yaml`,
   `watcher.py`, tests, `requirements.txt` + local `.venv`.
@@ -63,6 +63,55 @@
     worth remembering if dense Darija transcripts start hitting the limit.
   - Tests: `tests/test_llm_ollama.py`, 4 passing, HTTP call mocked (never
     hits the real Ollama server in the automated suite).
+- `stage/transcriber-darija` (current, not yet merged, branched from
+  `stage/llm-ollama-override`): `darija_overrides/transcriber_darija.py`
+  swaps in **anaszil/whisper-large-v3-turbo-darija** as the user requested.
+  - This model is a **LoRA adapter only** (checked its HF repo's file
+    list: `adapter_config.json` + `adapter_model.safetensors`, no merged
+    checkpoint, no CTranslate2/GGUF conversion) fine-tuned from
+    `openai/whisper-large-v3-turbo`. Can't be loaded via faster-whisper
+    like the vendored transcriber — uses the model card's own documented
+    path instead: `transformers` + `peft` (`PeftModel.from_pretrained` +
+    `merge_and_unload()`), run through an HF ASR `pipeline`. New deps:
+    `torch`, `transformers`, `peft`, `accelerate` (all installed fine,
+    arm64/Python 3.14 wheels available).
+  - Runs on **MPS** (Apple GPU) — `torch.backends.mps.is_available()` is
+    `True` on this machine, confirmed faster-whisper's own CPU/CUDA-only
+    limitation (per CLAUDE.md) doesn't apply here since this path bypasses
+    faster-whisper entirely.
+  - Fallback per the architecture doc ("fall back to generic Whisper-large
+    if output looks garbled"): `_looks_garbled()` flags empty output or a
+    back-to-back repetition loop (Whisper's classic hallucination
+    artifact); on trigger, falls back to the vendored faster-whisper
+    transcriber forced to `large-v3` (temporarily overrides
+    `_vendor.LOCAL_WHISPER_MODEL`, restores after) and logs the fallback
+    with the media path, per the hard constraint that fallbacks are never
+    silent.
+  - Reuses the vendored `.srt` cache helpers directly
+    (`_transcript_cache_path` / `_write_srt_cache` / `_load_srt_cache`)
+    rather than reimplementing cache I/O — this means the module imports
+    `shorts_generator` at load time (unlike `llm_ollama.py`, which never
+    needs a real import), so a `conftest.py` was added to put
+    `vendor/ai-youtube-shorts-generator` on `sys.path` for tests; any
+    production script (`processor.py`) will need the same one-line
+    `sys.path.insert` before importing this module.
+  - `install()` shadow-imports over `shorts_generator.local.transcriber`,
+    same mechanism as the LLM override.
+  - Verified end-to-end: real model load (one-time ~4min incl. HF
+    download of the ~1.6GB base model + adapter), transcribed the same
+    test clip used for earlier vendor checks, correct segment shape,
+    `.srt` cache reuse confirmed fast (<1s) on a second run. Also ran the
+    full unmodified `pipeline.generate_shorts(mode="local")` with **both**
+    overrides (`llm_ollama` + `transcriber_darija`) installed together —
+    download → Darija transcribe (cache) → Atlas-Chat highlight scoring →
+    9:16 crop all worked through vendor's own orchestration code.
+  - Only tested against English test audio so far (no real Darija source
+    video available yet) — confirms the plumbing/contract, not real
+    Darija transcription quality or how often the fallback actually
+    triggers on genuine Darija/French code-switching. Needs a real check
+    once real Darija channel content is flowing.
+  - Tests: `tests/test_transcriber_darija.py`, 9 passing, all heavy calls
+    (model load, transformers pipeline, vendor fallback) mocked.
 
 ## Plan of record (per architecture doc)
 
@@ -83,20 +132,24 @@ against real production sources.
 
 ## Next up
 
-- [ ] Merge/review `stage/vendor-base` and `stage/llm-ollama-override` into
-      `main`
+- [ ] Merge/review `stage/vendor-base`, `stage/llm-ollama-override`, and
+      `stage/transcriber-darija` into `main`
 - [ ] Confirm the rest of the real Darija source channel IDs from user
       (only one channel ID in `config/channels.yaml` so far) and re-run
       `watcher.py` against them
-- [ ] `darija_overrides/transcriber_darija.py` — swap in Darija fine-tune
+- [ ] Once real Darija channel content flows: sanity-check
+      `transcriber_darija.py` against actual Darija/French code-switch
+      audio (only tested against English so far) and see how often the
+      garbled-output fallback actually triggers
 - [ ] Extend `highlights.py`'s system prompt with Darija/code-switch
       few-shot examples (still using the vendored file's default English
       framing today — works, per the end-to-end test, but not yet tuned
       for Darija-specific hook/virality language)
 - [ ] `processor.py` — orchestrate vendor's `generate_shorts(mode="local")`
-      + scene detection + caption burn-in; must call
-      `darija_overrides.llm_ollama.install()` before invoking it, and add
-      `vendor/ai-youtube-shorts-generator` to `sys.path`
+      + scene detection + caption burn-in; must add
+      `vendor/ai-youtube-shorts-generator` to `sys.path` and call both
+      `darija_overrides.llm_ollama.install()` and
+      `darija_overrides.transcriber_darija.install()` before invoking it
 - [ ] `qc_gate.py`, `publisher.py`, `reporter.py`, scheduler
 
 ## Open questions
