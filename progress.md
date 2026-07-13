@@ -1,6 +1,6 @@
 # Progress
 
-## Status: watcher merged, base repo vendored, on branch `stage/vendor-base`
+## Status: watcher merged, base repo vendored, Ollama LLM override built, on branch `stage/llm-ollama-override`
 
 - `main`: watcher stage merged (`243ad1d`). Has `db.py`, `config/channels.yaml`,
   `watcher.py`, tests, `requirements.txt` + local `.venv`.
@@ -34,6 +34,35 @@
     (`darija_overrides/llm_ollama.py`) will need to shadow-import in place
     of `shorts_generator.local.llm`, not just pass a different `llm_fn`,
     since `pipeline.py` imports `call_local_llm` directly.
+- `stage/llm-ollama-override` (current, not yet merged, branched from
+  `stage/vendor-base`): **deviation from the architecture doc's tech stack**
+  — using **Atlas-Chat-9B** (`hf.co/QuantFactory/Atlas-Chat-9B-GGUF:Q4_K_M`,
+  a Gemma-2 fine-tune purpose-built for Darija) instead of the doc's
+  Qwen2.5 7B/14B. User's call, already installed via Ollama, not yet
+  reflected in the architecture doc — flag if that doc gets revisited.
+  `qwen2.5:7b` stays pulled but unused (user asked not to remove it).
+  - Quick comparison before switching: zero-shot, Qwen2.5 drifted into
+    Chinese/MSA on Darija prompts even with an explicit "answer only in
+    Darija" system prompt; Atlas-Chat stayed in Darija script and produced
+    coherent, on-topic output on a highlight-scoring-shaped prompt.
+  - `darija_overrides/llm_ollama.py`: `call_local_llm(prompt) -> str` hits
+    Ollama's `/api/generate` (stdlib `urllib`, no new dependency) and
+    returns raw text; `install()` does the `sys.modules` shadow-import over
+    `shorts_generator.local.llm`. Confirmed end-to-end against the real
+    vendored `pipeline.generate_shorts(mode="local", ...)` (not just the
+    unit tests) — full download → transcribe → Atlas-Chat highlight scoring
+    → 9:16 crop ran and produced a real clip.
+  - Found & fixed: Atlas-Chat occasionally emits Arabic comma `،` as a
+    JSON structural delimiter instead of ASCII `,`, which breaks
+    `json.loads` in the vendored `highlights.py`. `call_local_llm`
+    normalizes this before returning (documented as a known ceiling —
+    only this one failure mode is patched; `highlights.py`'s own
+    retry-with-stricter-prompt loop covers the rest).
+  - Context length is 8192 tokens (per `ollama show`) — fine for the
+    20-min chunks `highlights.py` already splits long videos into, but
+    worth remembering if dense Darija transcripts start hitting the limit.
+  - Tests: `tests/test_llm_ollama.py`, 4 passing, HTTP call mocked (never
+    hits the real Ollama server in the automated suite).
 
 ## Plan of record (per architecture doc)
 
@@ -54,16 +83,20 @@ against real production sources.
 
 ## Next up
 
-- [ ] Merge/review `stage/vendor-base` into `main`
+- [ ] Merge/review `stage/vendor-base` and `stage/llm-ollama-override` into
+      `main`
 - [ ] Confirm the rest of the real Darija source channel IDs from user
       (only one channel ID in `config/channels.yaml` so far) and re-run
       `watcher.py` against them
 - [ ] `darija_overrides/transcriber_darija.py` — swap in Darija fine-tune
-- [ ] `darija_overrides/llm_ollama.py` — swap OpenAI call for Ollama; needs
-      to shadow-import over `shorts_generator.local.llm` (see note above),
-      not just pass a different callback
+- [ ] Extend `highlights.py`'s system prompt with Darija/code-switch
+      few-shot examples (still using the vendored file's default English
+      framing today — works, per the end-to-end test, but not yet tuned
+      for Darija-specific hook/virality language)
 - [ ] `processor.py` — orchestrate vendor's `generate_shorts(mode="local")`
-      + scene detection + caption burn-in
+      + scene detection + caption burn-in; must call
+      `darija_overrides.llm_ollama.install()` before invoking it, and add
+      `vendor/ai-youtube-shorts-generator` to `sys.path`
 - [ ] `qc_gate.py`, `publisher.py`, `reporter.py`, scheduler
 
 ## Open questions
