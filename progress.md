@@ -1,15 +1,20 @@
 # Progress
 
-## Status: watcher merged, base repo vendored, both LLM + transcriber overrides built, on branch `stage/transcriber-darija`
+## Status: watcher, vendor, both overrides, and caption burn-in all merged to `main`; building caption stage next up review
 
-- `main`: watcher stage merged (`243ad1d`). Has `db.py`, `config/channels.yaml`,
-  `watcher.py`, tests, `requirements.txt` + local `.venv`.
+- `main`: everything below is merged in (`watcher` → `vendor-base` →
+  `llm-ollama-override` → `transcriber-darija` → `real-channel-id`, all
+  squashed through as merge commits; all feature branches deleted after
+  merge since this is a solo project and they added no further value once
+  merged). Has `db.py`, `config/channels.yaml`, `watcher.py`,
+  `darija_overrides/`, `captioner.py`, tests, `requirements.txt` + local
+  `.venv`.
 - `watcher.run()` fetches each configured channel's RSS feed, diffs against
   `source_videos`, inserts new rows with `status='queued'`. Not yet run
   against a real channel — one real channel ID now in
   `config/channels.yaml` (`UCkax8bjMiSlC05JeXZSUKaQ`), needs a re-run to
   verify + more Darija sources still needed.
-- `stage/vendor-base` (current, not yet merged): vendored
+- Base repo vendored: vendored
   `SamurAIGPT/AI-Youtube-Shorts-Generator` as a git submodule at
   `vendor/ai-youtube-shorts-generator/`. Verified locally (Python 3.14,
   arm64, no CUDA):
@@ -34,8 +39,7 @@
     (`darija_overrides/llm_ollama.py`) will need to shadow-import in place
     of `shorts_generator.local.llm`, not just pass a different `llm_fn`,
     since `pipeline.py` imports `call_local_llm` directly.
-- `stage/llm-ollama-override` (current, not yet merged, branched from
-  `stage/vendor-base`): **deviation from the architecture doc's tech stack**
+- LLM override: **deviation from the architecture doc's tech stack**
   — using **Atlas-Chat-9B** (`hf.co/QuantFactory/Atlas-Chat-9B-GGUF:Q4_K_M`,
   a Gemma-2 fine-tune purpose-built for Darija) instead of the doc's
   Qwen2.5 7B/14B. User's call, already installed via Ollama, not yet
@@ -63,8 +67,7 @@
     worth remembering if dense Darija transcripts start hitting the limit.
   - Tests: `tests/test_llm_ollama.py`, 4 passing, HTTP call mocked (never
     hits the real Ollama server in the automated suite).
-- `stage/transcriber-darija` (current, not yet merged, branched from
-  `stage/llm-ollama-override`): `darija_overrides/transcriber_darija.py`
+- Transcriber override: `darija_overrides/transcriber_darija.py`
   swaps in **anaszil/whisper-large-v3-turbo-darija** as the user requested.
   - This model is a **LoRA adapter only** (checked its HF repo's file
     list: `adapter_config.json` + `adapter_model.safetensors`, no merged
@@ -112,6 +115,35 @@
     once real Darija channel content is flowing.
   - Tests: `tests/test_transcriber_darija.py`, 9 passing, all heavy calls
     (model load, transformers pipeline, vendor fallback) mocked.
+- Caption burn-in (`captioner.py`, current, not yet merged, on branch
+  `stage/captioner`): per architecture doc §3.7 — genuinely net-new, zero
+  code existed anywhere for this before now (confirmed by grep; the "Me at
+  the zoo" test clips had no captions simply because this stage hadn't
+  been built yet, not a bug).
+  - `burn_captions(clip_path, segments, window_start, window_end)`: takes
+    the *full-video* transcript segments plus a highlight's
+    `[start_time, end_time]` window, filters/rebases the overlapping
+    segments to the clip's own 0-based timeline (`_segments_for_window`),
+    builds an `.ass` file (`build_ass`) sized to the clip's actual
+    resolution (via `ffprobe`), and burns it in with ffmpeg's `ass` filter
+    (libass).
+  - Scope: segment-level captions (each Whisper segment = one subtitle
+    cue), not word-by-word/karaoke-style highlighting — the architecture
+    doc's §3.7 phrasing assumes word-level timestamps, but neither
+    override currently produces those; segment-level satisfies the QC
+    gate's "captions present" check and is the simpler, working version.
+    Word-level styling is a future nice-to-have, not started.
+  - **Darija/RTL rendering deliberately left open, per user direction.**
+    Confirmed ffmpeg on this machine has `--enable-libass` and
+    `--enable-libharfbuzz` (needed for Arabic glyph shaping/joining), and
+    a real burn with a mixed English/Darija two-line test rendered without
+    error — but nobody has visually verified the Arabic line reads
+    correctly (right-to-left, joined properly) rather than reversed or
+    broken. That verification + any fix is punted to later, as instructed.
+  - Tests: `tests/test_captioner.py`, 9 passing — pure logic
+    (timestamp formatting, windowing, ASS building) unit-tested;
+    `ffmpeg`/`ffprobe` subprocess calls mocked. Real end-to-end burn done
+    manually (not in the automated suite), confirmed valid output file.
 
 ## Plan of record (per architecture doc)
 
@@ -132,21 +164,22 @@ against real production sources.
 
 ## Next up
 
-- [ ] Merge/review `stage/vendor-base`, `stage/llm-ollama-override`, and
-      `stage/transcriber-darija` into `main`
+- [ ] Merge/review `stage/captioner` into `main`
 - [ ] Confirm the rest of the real Darija source channel IDs from user
       (only one channel ID in `config/channels.yaml` so far) and re-run
       `watcher.py` against them
 - [ ] Once real Darija channel content flows: sanity-check
       `transcriber_darija.py` against actual Darija/French code-switch
-      audio (only tested against English so far) and see how often the
-      garbled-output fallback actually triggers
+      audio (only tested against English so far), see how often the
+      garbled-output fallback actually triggers, and **visually verify
+      captioner.py's Arabic/RTL rendering** on real Darija text (open item,
+      deliberately deferred)
 - [ ] Extend `highlights.py`'s system prompt with Darija/code-switch
       few-shot examples (still using the vendored file's default English
       framing today — works, per the end-to-end test, but not yet tuned
       for Darija-specific hook/virality language)
 - [ ] `processor.py` — orchestrate vendor's `generate_shorts(mode="local")`
-      + scene detection + caption burn-in; must add
+      + scene detection + `captioner.burn_captions(...)`; must add
       `vendor/ai-youtube-shorts-generator` to `sys.path` and call both
       `darija_overrides.llm_ollama.install()` and
       `darija_overrides.transcriber_darija.install()` before invoking it
@@ -154,4 +187,6 @@ against real production sources.
 
 ## Open questions
 
-- None currently blocking.
+- Darija/RTL caption rendering correctness — not yet visually verified,
+  deliberately deferred per user direction (2026-07-13). Revisit once real
+  Darija source content is available to test against.
