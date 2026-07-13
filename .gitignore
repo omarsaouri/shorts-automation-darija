@@ -3,6 +3,7 @@
 raw/
 clips/
 reports/
+output/
 state.db
 __pycache__/
 *.pyc

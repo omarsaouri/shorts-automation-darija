@@ -1,10 +1,10 @@
 # Progress
 
-## Status: watcher, vendor, both overrides, and caption burn-in all merged to `main`; building caption stage next up review
+## Status: watcher, vendor, all overrides, and caption burn-in merged to `main`; two real-video bugs found and fixed, on branch `fix/real-video-test-findings`
 
 - `main`: everything below is merged in (`watcher` → `vendor-base` →
-  `llm-ollama-override` → `transcriber-darija` → `real-channel-id`, all
-  squashed through as merge commits; all feature branches deleted after
+  `llm-ollama-override` → `transcriber-darija` → `real-channel-id` →
+  `captioner`, all as merge commits; all feature branches deleted after
   merge since this is a solo project and they added no further value once
   merged). Has `db.py`, `config/channels.yaml`, `watcher.py`,
   `darija_overrides/`, `captioner.py`, tests, `requirements.txt` + local
@@ -145,6 +145,59 @@
     `ffmpeg`/`ffprobe` subprocess calls mocked. Real end-to-end burn done
     manually (not in the automated suite), confirmed valid output file.
 
+## Real Darija video test (2026-07-13) — found 2 real bugs, both fixed
+
+First test against real Darija content: `montakhab fans`
+(`UCkax8bjMiSlC05JeXZSUKaQ`), a Moroccan football commentary channel —
+`watcher.run()` queued 15 real videos into `state.db` successfully. Ran
+the full manual pipeline (download → Darija transcribe → Atlas-Chat
+scoring → crop → caption) on a 40.5-minute video
+(`KazZdpoVvio`) via an ad hoc script (not a committed `processor.py` yet).
+
+**Bug 1 — transcriber segmentation collapsed into 2 giant blobs.**
+`transcriber_darija.py`'s `chunk_length_s=30` ASR pipeline setting
+(transformers itself warns this is "very experimental with seq2seq
+models") produced only 2 segments for the entire 39-minute audio instead
+of per-sentence ones, including a visible hallucination artifact (a
+50+-character run of repeated و). This cascaded into broken captions —
+`captioner.py` dumped an ~2800-character wall of text onto a 15-second
+clip, since it just renders whatever segment(s) overlap a clip's window.
+Fixed: switched to word-level timestamps (reliable) + WAV extraction
+(the non-chunked pipeline path can't reliably read .mp4 directly) +
+`_group_words_into_segments` re-groups words into phrase-sized segments
+at natural pauses. Verified on a 3-min real sample: 2 blobs → 14 clean
+segments. Also strengthened `_looks_garbled` (which should have caught
+this and didn't) with a segments-per-minute density check and a
+repeated-character-run check. See `fix/real-video-test-findings` commit
+`3ba074b`.
+
+**Bug 2 — face-tracking crop snapping to false positives.** User-observed
+on `short_02.mp4`: the vertical crop's focus visibly jerked away from the
+speaker and back, "like it's catching other objects and returning."
+Root cause in vendor's `local/clipper.py::_reframe_vertical`: it re-targets
+the crop to whichever Haar cascade detection is largest, every frame,
+immediately smoothing toward it — so a single-frame false positive gets
+chased exactly like a real subject. Fixed via
+`darija_overrides/clipper_stable.py`, which patches only
+`_reframe_vertical` (monkeypatches the one vendor function attribute,
+`crop_clip_local`/`crop_highlights_local`/`_cut_subclip` stay unmodified
+vendor code) with a debounced `_FaceTracker`: small movements are trusted
+immediately, but a big jump needs `REQUIRED_CONSECUTIVE_FRAMES` (3) of
+consistent detections before the crop follows it. This is the first
+"reuse as-is" vendor component (per the architecture doc's reuse table)
+that turned out to need a fix — flagging the deviation from plan, same as
+the Qwen2.5→Atlas-Chat swap. See commit `0b0baba`.
+
+**Both fixes verified in isolation** (3-min sample for the transcriber;
+re-cropping the exact buggy window for the clipper) before re-running the
+full 40-minute video end-to-end with all three overrides
+(`llm_ollama` + `transcriber_darija` + `clipper_stable`) installed
+together, output written to `clips/KazZdpoVvio/`.
+
+Also added `output/` to `.gitignore` — the vendored pipeline's default
+local-mode scratch dir (source videos, crops, `.srt` caches) wasn't
+excluded yet.
+
 ## Plan of record (per architecture doc)
 
 Vendor `SamurAIGPT/AI-Youtube-Shorts-Generator` into `vendor/` (done, as a
@@ -164,25 +217,25 @@ against real production sources.
 
 ## Next up
 
-- [ ] Merge/review `stage/captioner` into `main`
-- [ ] Confirm the rest of the real Darija source channel IDs from user
-      (only one channel ID in `config/channels.yaml` so far) and re-run
-      `watcher.py` against them
-- [ ] Once real Darija channel content flows: sanity-check
-      `transcriber_darija.py` against actual Darija/French code-switch
-      audio (only tested against English so far), see how often the
-      garbled-output fallback actually triggers, and **visually verify
-      captioner.py's Arabic/RTL rendering** on real Darija text (open item,
-      deliberately deferred)
+- [ ] Merge/review `fix/real-video-test-findings` into `main`
+- [ ] Review the re-run output in `clips/KazZdpoVvio/` (3 captioned clips)
+      — confirm captions are now readable phrase-sized cues, not walls of
+      text, and that the face-tracking fix visibly holds up over the full
+      40 minutes, not just the one window it was verified against
+- [ ] **Visually verify `captioner.py`'s Arabic/RTL rendering** on this
+      real Darija text — now have real transcript segments to check
+      against, no longer just the English-only smoke test (open item,
+      deliberately deferred until now)
+- [ ] Get more real Darija source channel IDs from user (only one channel
+      in `config/channels.yaml` so far) and re-run `watcher.py`
 - [ ] Extend `highlights.py`'s system prompt with Darija/code-switch
       few-shot examples (still using the vendored file's default English
-      framing today — works, per the end-to-end test, but not yet tuned
-      for Darija-specific hook/virality language)
+      framing today)
 - [ ] `processor.py` — orchestrate vendor's `generate_shorts(mode="local")`
       + scene detection + `captioner.burn_captions(...)`; must add
-      `vendor/ai-youtube-shorts-generator` to `sys.path` and call both
-      `darija_overrides.llm_ollama.install()` and
-      `darija_overrides.transcriber_darija.install()` before invoking it
+      `vendor/ai-youtube-shorts-generator` to `sys.path` and call
+      `darija_overrides.{llm_ollama,transcriber_darija,clipper_stable}.install()`
+      before invoking it
 - [ ] `qc_gate.py`, `publisher.py`, `reporter.py`, scheduler
 
 ## Open questions
