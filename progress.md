@@ -198,6 +198,109 @@ Also added `output/` to `.gitignore` — the vendored pipeline's default
 local-mode scratch dir (source videos, crops, `.srt` caches) wasn't
 excluded yet.
 
+## Memory-overload investigation & fix (2026-07-18) — two real machine crashes, root-caused and fixed; uncommitted on `main`
+
+User reported the real pipeline overloading memory on the M1 Pro (16GB).
+Investigation found **two independent causes**, both real, both now fixed
+in the working tree (not yet committed/branched — see below).
+
+**Cause 1 (small): Ollama's default keep-alive.** `darija_overrides/llm_ollama.py`'s
+`call_local_llm` sent no `keep_alive` to Ollama's `/api/generate`, so
+Atlas-Chat-9B (~5.5-6GB) stayed resident for Ollama's default 5-minute
+keep-alive — overlapping with the *next* video's Whisper reload if a batch
+run processed videos back-to-back, since Ollama (Metal) and torch (MPS)
+share the same unified memory pool on Apple Silicon. Fixed: payload now
+sends `"keep_alive": 0` so the model evicts immediately after each
+highlight-scoring call, mirroring the Whisper-side unload
+(`transcriber_darija._unload_pipeline`) that already existed. Verified with
+a mocked test (`tests/test_llm_ollama.py`) and confirmed no crash across
+one real end-to-end run (7-min `SkxfKZgy9kw` video, full pipeline —
+download → Darija transcribe → Ollama scoring → crop → caption — completed
+clean; output at `clips/SkxfKZgy9kw/short_01.captioned.mp4`).
+
+**Cause 2 (the real crash driver): word-level timestamps blow up memory
+with audio length.** Two actual hard crashes happened during testing —
+confirmed via `uptime` resetting to ~1-2 min and the `/tmp` scratchpad
+being wiped, not just an app-level exception:
+- 42-min video (`Zhj07EXj4HY`) — crashed with no time to react (watchdog's
+  5s polling wasn't fast enough); logs lost with the reboot.
+- 21-min video (`CadW5Vyh-hg`) — logged to a persistent path this time
+  (`output/debug_logs/`, gitignored) before it crashed: swap grew from
+  ~1GB to ~44GB in under 2 minutes, all during the Darija transcribe step,
+  before Ollama was ever called.
+
+Root cause, confirmed by reading `transformers`' `generation_whisper.py`
+(v5.13.1): `return_timestamps="word"` forces the model into eager
+attention and runs a per-~30s-window DTW cross-attention capture
+(`_extract_token_timestamps`) inside Whisper's own internal long-form
+`generate()` loop, and that memory keeps growing the more windows a
+*single* `generate()` call processes — i.e. it scales with audio duration.
+Confirmed directly: re-running the exact 21-min file with
+`return_timestamps=True` (segment-level, model's own timestamp tokens, no
+cross-attention capture) instead of `"word"` stayed completely flat
+(66-67% free, zero swap) for the full file, at the same internal window
+count — isolating the cross-attention capture as the driver, not duration
+or iteration count alone.
+
+**Fix:** `darija_overrides/transcriber_darija.py` now chunks audio into
+`TRANSCRIBE_WINDOW_SECONDS`-long windows *before* calling the ASR pipeline,
+instead of one long-form call over the whole file — bounds each call's
+internal loop to a couple of iterations regardless of total video length.
+New functions: `_iter_wav_windows` (stdlib `wave`, no new ffmpeg calls,
+padded windows so words aren't cut at boundaries), `_keep_word_in_window` /
+`_extract_window_words` (rebase + dedupe words across window padding),
+`_transcribe_wav_in_windows` (orchestrates + flushes the accelerator cache
+between every window via a new shared `_flush_accelerator_cache`, which
+`_unload_pipeline` now also calls). Keeps word-level timestamp quality
+(still feeds the existing `_group_words_into_segments`) rather than
+falling back to coarser segment-level timestamps.
+
+Iterated on window size against the real 21-min crash file:
+- 60s windows: swap plateaued at 3-4GB for ~10 min (huge improvement over
+  unbounded 44GB) but spiked to 5GB/5% free right at the very end; a
+  memory watchdog script killed the process — though the transcript had
+  actually already finished and written a complete, valid `.srt` cache
+  moments before/during that kill. Likely fine, but too close to trust.
+- Tightened to 30s windows + added `torch.mps.synchronize()` before
+  `torch.mps.empty_cache()` in `_flush_accelerator_cache` (Metal work can
+  still be in-flight when `empty_cache()` runs, so it wasn't necessarily
+  reclaiming everything it could). Re-ran on the same file with a
+  (bug-fixed) watchdog: **943s, 116 segments, full 1273/1280s coverage,
+  `py_rss` bounded 620-850MB the whole run, swap capped at 3-4GB, free%
+  never below ~28%.** Real margin this time, not a near-miss.
+
+Debugging note worth keeping: the ad hoc memory-watchdog shell script had
+its own real bug — on this machine `python3` re-execs into
+`.../Python.app/Contents/MacOS/Python` on startup (a macOS framework-Python
+quirk), so pattern-matching the literal string `"python3"` in `ps`/`pgrep`
+output silently finds nothing. Early "successful" watchdog readings were
+accidentally matching the test harness's own wrapper shell (whose command
+text happened to contain `"python3 ... script.py"` as literal source, not
+the real re-exec'd process) — which is why RSS readings were bogus
+(~0-3MB) even though the system-wide free%/swap numbers were accurate.
+Fixed by matching the script's bare filename and excluding the watchdog's
+own PID directly, no `"python3"` anchor needed.
+
+**Not yet done:** the 42-min video that originally crashed (`Zhj07EXj4HY`)
+has not been re-tested against the fix — only the 7-min and 21-min videos
+have. Only `transcribe_local` in isolation was tested at the 21-min length
+(no download/Ollama/crop) to avoid unnecessary risk while iterating on
+window size; the full pipeline hasn't been re-run end-to-end at that
+length yet. All of the above is **uncommitted on `main`** — per CLAUDE.md
+this should go through a branch (e.g. `fix/transcriber-memory-overload`)
+before merging, not yet done. Tests: `tests/test_transcriber_darija.py`
+extended with coverage for the new windowing/merging logic;
+`tests/test_llm_ollama.py` extended for the `keep_alive` assertion; full
+suite (46 tests) passing, `black`/`ruff` clean.
+
+**Separate, unfixed issue noticed along the way:** on the 7-min
+`SkxfKZgy9kw` test, `get_highlights` returned only 1 highlight spanning 396
+of the video's 419 seconds — essentially the whole video, not a short
+clip. Likely Atlas-Chat-9B not reliably following `highlights.py`'s
+"45-90s sweet spot, no >50% overlap" prompt instructions, or
+`dedupe_highlights` collapsing several heavily-overlapping candidates down
+to one. Not investigated this session.
+
 ## Plan of record (per architecture doc)
 
 Vendor `SamurAIGPT/AI-Youtube-Shorts-Generator` into `vendor/` (done, as a
@@ -217,6 +320,17 @@ against real production sources.
 
 ## Next up
 
+- [ ] Branch + commit the memory-overload fix (currently uncommitted on
+      `main` — `darija_overrides/transcriber_darija.py` windowed
+      transcription + `torch.mps.synchronize()`,
+      `darija_overrides/llm_ollama.py` `keep_alive: 0`, both test files)
+- [ ] Re-test the fix against the 42-min video that originally crashed
+      (`Zhj07EXj4HY`) — only 7-min and 21-min have been verified so far
+- [ ] Re-run the *full* pipeline (not just transcribe-only) end-to-end at
+      the 21-min+ length now that the transcriber fix is in place
+- [ ] Look into `get_highlights` returning only 1 highlight spanning
+      almost the entire 7-min `SkxfKZgy9kw` video instead of several short
+      clips — likely a local-LLM prompt-adherence or dedupe-overlap issue
 - [ ] Merge/review `fix/real-video-test-findings` into `main`
 - [ ] Review the re-run output in `clips/KazZdpoVvio/` (3 captioned clips)
       — confirm captions are now readable phrase-sized cues, not walls of

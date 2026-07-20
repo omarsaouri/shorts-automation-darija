@@ -46,6 +46,12 @@ def call_local_llm(prompt: str, model: Optional[str] = None) -> str:
         "prompt": prompt,
         "stream": False,
         "options": {"temperature": 0.7},
+        # Evict Atlas-Chat-9B right after this call instead of Ollama's
+        # default 5-min keep-alive — mirrors transcriber_darija.py's
+        # _unload_pipeline: on an M1 Pro, Ollama (Metal) and torch (MPS)
+        # share the same unified memory pool, so a still-warm Ollama model
+        # plus the next video's reloaded Whisper model was overloading RAM.
+        "keep_alive": 0,
     }
     req = urllib.request.Request(
         f"{OLLAMA_HOST}/api/generate",

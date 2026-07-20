@@ -30,6 +30,7 @@ def test_call_local_llm_sends_prompt_and_returns_normalized_text():
     assert sent_payload["prompt"] == "some prompt"
     assert sent_payload["model"] == llm_ollama.OLLAMA_MODEL
     assert sent_payload["stream"] is False
+    assert sent_payload["keep_alive"] == 0
     assert result == '{"a":"x","b":"y"}'
     json.loads(result)
 
