@@ -522,6 +522,68 @@ a real video (that's the top "Next up" item).
 
 Committed on `stage/processor`, branched off `main`. Not yet merged.
 
+## processor.py's first real end-to-end run — found and fixed a third JSON quirk (2026-07-21)
+
+Ran `python processor.py SkxfKZgy9kw --num-clips 3` for real (cached
+download + transcript, live Ollama call, live PySceneDetect, live
+ffmpeg/OpenCV crop, live caption burn-in) — the first non-mocked run of
+`processor.py`.
+
+**First attempt failed**, `RuntimeError: Highlight generator produced
+invalid output after 3 attempts: Expecting ',' delimiter`. Confirmed
+`source_videos.status` correctly landed on `'failed'` and the exception
+wasn't swallowed — the processor's own error handling worked as designed.
+
+**Root-caused the actual JSON bug** by capturing raw Ollama responses
+directly (bypassing `llm_ollama.py`'s existing fixes) across ~15 real
+calls against the same transcript: Atlas-Chat-9B sometimes stops
+generating mid-string and Ollama reports `done_reason: "stop"` (not
+`"length"`) — this is the model ending its own generation early, not an
+HTTP/token-limit cutoff, so there's no missing text to recover, only
+whatever came before the cutoff. Distinct from the two already-fixed
+quirks (Arabic comma, trailing comma) — about 2/5 real attempts hit this
+in one sampling run, explaining why all 3 of `call_highlight_api`'s
+retries can plausibly fail back-to-back.
+
+Also surfaced (once, in the same sampling) a *third* shape: the model
+repeating `"highlights":[...]` as several sibling keys instead of one
+array with several elements — worth guarding against separately, since
+naively concatenating text across that boundary would produce JSON that
+`json.loads` accepts but silently resolves by keeping only the *last*
+duplicate key's value, dropping the earlier (valid) ones with no error at
+all.
+
+**Fix, in `llm_ollama.py`** (same file/pattern as the other two quirks):
+new `_salvage_truncated_highlights` scans for the last `}` that closes a
+complete element directly inside the top-level `"highlights"` array, then
+truncates there and re-closes `]}` — recovering whatever complete
+highlights came before a mid-string cutoff. Stops immediately if the array
+closes cleanly (handles the repeated-key shape safely: only the genuinely
+complete first array survives, nothing gets silently overwritten by a
+later duplicate key). No-op for already-well-formed responses and for the
+small content-type-detection response (no `[` at all). Chained before the
+existing two fixes in `call_local_llm`.
+
+**Re-ran `processor.py` against the same video after the fix — succeeded
+end-to-end.** 3 clips produced: `output/short_0{1,2,3}.captioned.mp4`,
+9:16 (404×720), durations 23.6s/23.9s/56.1s (all within the 20-180s bounds
+from the duration-filter fix), `state.db` has `source_videos.status =
+'captioned'` and 3 `clips` rows at `status = 'pending_qc'`. Pulled one
+frame (`output/short_01.captioned.mp4` @ 5s) and visually confirmed Arabic
+captions render correctly — right-to-left, properly shaped/connected
+script, not reversed or disconnected — a positive sign on the long-open
+RTL rendering question, though this is one frame, not a full verification
+pass.
+
+9 new tests in `tests/test_llm_ollama.py` (unit tests on the salvage
+function including the repeated-key case, plus an integration test through
+`call_local_llm`'s full chain) — all built from real captured Ollama
+output, not synthetic guesses. 80 tests passing total, `black`/`ruff`
+clean.
+
+Committed on `fix/llm-json-truncation`, branched off `main`. Not yet
+merged.
+
 ## Plan of record (per architecture doc)
 
 Vendor `SamurAIGPT/AI-Youtube-Shorts-Generator` into `vendor/` (done, as a
@@ -541,15 +603,15 @@ against real production sources.
 
 ## Next up
 
-- [ ] Merge `stage/processor` into `main`
-- [ ] Run `processor.py` end-to-end against a real cached video
-      (`SkxfKZgy9kw` or `CadW5Vyh-hg`) — only unit-tested with
-      `generate_shorts`/`captioner.burn_captions` mocked so far, no real
-      run yet
+- [ ] Merge `fix/llm-json-truncation` into `main`
 - [ ] Re-run the *full* pipeline against a video ≥30 min now that the
       chunking bug is fixed (previously blocked on this)
 - [ ] `qc_gate.py` — next real gate after `processor.py`; reads `clips`
       rows with `status = 'pending_qc'`
+- [ ] Full RTL correctness pass on `captioner.py` — one real captioned
+      frame (`output/short_01.captioned.mp4`) looked correctly shaped and
+      right-aligned, which is promising, but that's one frame, not a real
+      verification pass
 - [ ] Review the re-run output in `clips/KazZdpoVvio/` (3 captioned clips)
       — confirm captions are now readable phrase-sized cues, not walls of
       text, and that the face-tracking fix visibly holds up over the full
