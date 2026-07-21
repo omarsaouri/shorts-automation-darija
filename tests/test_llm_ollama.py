@@ -1,5 +1,7 @@
 import json
+import socket
 import sys
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 from darija_overrides import llm_ollama
@@ -16,6 +18,13 @@ def test_fix_arabic_json_punctuation_makes_json_loads_succeed():
     broken = '{"a":"x"،"b":"y"}'
     assert llm_ollama._fix_arabic_json_punctuation(broken) == '{"a":"x","b":"y"}'
     json.loads(llm_ollama._fix_arabic_json_punctuation(broken))
+
+
+def test_strip_trailing_commas_makes_json_loads_succeed():
+    broken = '{"highlights": [{"a": 1,}, {"b": 2,},],}'
+    fixed = llm_ollama._strip_trailing_commas(broken)
+    assert fixed == '{"highlights": [{"a": 1}, {"b": 2}]}'
+    json.loads(fixed)
 
 
 def test_call_local_llm_sends_prompt_and_returns_normalized_text():
@@ -45,6 +54,20 @@ def test_call_local_llm_model_override():
     request_arg = mock_urlopen.call_args[0][0]
     sent_payload = json.loads(request_arg.data)
     assert sent_payload["model"] == "some-other-model"
+
+
+def test_call_local_llm_returns_empty_string_on_timeout_instead_of_raising():
+    with patch("darija_overrides.llm_ollama.urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.side_effect = socket.timeout("timed out")
+        result = llm_ollama.call_local_llm("some prompt")
+    assert result == ""
+
+
+def test_call_local_llm_returns_empty_string_on_connection_error():
+    with patch("darija_overrides.llm_ollama.urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.side_effect = urllib.error.URLError("connection refused")
+        result = llm_ollama.call_local_llm("some prompt")
+    assert result == ""
 
 
 def test_install_shadows_vendor_llm_module():

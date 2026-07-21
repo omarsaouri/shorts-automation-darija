@@ -301,6 +301,80 @@ clip. Likely Atlas-Chat-9B not reliably following `highlights.py`'s
 `dedupe_highlights` collapsing several heavily-overlapping candidates down
 to one. Not investigated this session.
 
+## Memory-overload fix committed + re-tested against real videos (2026-07-20/21)
+
+Memory-overload fix from the section above is now committed on
+`fix/transcriber-memory-overload` (`e60d52d`), branched off `main` per
+CLAUDE.md's workflow — was sitting uncommitted on `main` before this. Not
+yet merged.
+
+**42-min re-test (`Zhj07EXj4HY`, the video that originally crashed the
+machine) — transcribe-only, passed clean.** Ran under a memory watchdog
+(2s-interval `vm_stat`/`sysctl vm.swapusage` polling, kills the process on
+swap > 8GB or free% < 8% for 3 consecutive samples — both well short of the
+~44GB swap spike that caused the original crash). Result: 221 segments,
+full 2532s/42.2min coverage, wall time 29m22s, peak swap 6.68GB, peak
+py_rss 1.1GB, no watchdog intervention. Output cached at
+`output/source_Zhj07EXj4HY.srt`. Closes the "only 7-min/21-min verified"
+gap from the section above.
+
+**Full pipeline (transcribe → Ollama scoring → crop → caption) re-tested,
+found and fixed two more real bugs in `llm_ollama.py` along the way** (both
+only reachable with a long/large transcript, which is why they weren't seen
+in earlier shorter-video tests):
+
+1. **Unhandled network/timeout exception crashed the whole pipeline.**
+   `highlights.py`'s `call_highlight_api` retry loop only wraps *JSON
+   parsing* in try/except, not the `llm_fn(prompt)` call itself — so when a
+   large 20-min transcript chunk (per `highlights.py`'s own
+   `CHUNK_SIZE_SECONDS`) made Atlas-Chat-9B's response take longer than the
+   300s Ollama call timeout, the `TimeoutError` propagated straight out and
+   killed the run instead of being retried. Fixed in `llm_ollama.py`:
+   catches `URLError`/`socket.timeout`/`TimeoutError` and returns `""`
+   instead of raising, which routes it through the vendor's *existing*
+   retry loop the same way a malformed-JSON response already is. Also
+   bumped `OLLAMA_TIMEOUT_SECONDS` 300 → 480 for headroom. Root-cause fix
+   stayed entirely inside our override layer, no vendor edit.
+2. **Trailing comma in model JSON output.** Same category as the
+   already-documented Arabic-comma quirk — Atlas-Chat-9B occasionally
+   leaves a trailing `,` before a closing `]`/`}` on large highlight lists,
+   which vendor's strict `json.loads` doesn't tolerate. Added
+   `_strip_trailing_commas` alongside the existing
+   `_fix_arabic_json_punctuation`, same "known ceiling, not a general JSON
+   repair tool" rationale.
+
+Tests: `tests/test_llm_ollama.py` extended (4 new tests: timeout →
+empty-string, connection error → empty-string, trailing-comma stripping,
+plus the existing suite), 49 passing total, `black`/`ruff` clean.
+
+**Found, NOT fixed (user's call, 2026-07-21): a real vendor bug in
+`highlights.py`'s chunking breaks highlight detection on any video ≥30
+min.** `chunk_transcript()` keeps each segment's *absolute* video timestamp
+when building the LLM prompt (e.g. chunk 2 of the 42-min video shows
+`[1146.2s]` through `[2377.9s]`), so the model naturally answers with
+absolute-range timestamps. But `call_highlight_api` passes
+`chunk["duration"]` (the chunk's *relative* span, e.g. `1200`) as the
+`max_end` clamp in `_sanitize_highlights` — any highlight past `1200` gets
+clamped to `1200` on both ends and dropped as zero-length, and
+`get_highlights` then adds `+offset` again on top of whatever survives.
+Net effect: chunks after the first lose nearly all their highlights, then
+`call_highlight_api` raises `RuntimeError` after 3 failed attempts and
+aborts the whole multi-chunk loop — confirmed directly by capturing
+Atlas-Chat-9B's raw output for chunk 2 (`start_time: 7634.95` against a
+`max_end` of `1200`, sanitized count 0). Not backend-specific — this is
+vendor's own local-mode chunking math, would affect MuAPI/gpt-5-mini the
+same way. Root-cause fix would need a `darija_overrides` module that
+rebases each chunk's transcript timestamps to 0 before building the prompt
+(same monkeypatch pattern as `clipper_stable.py`), but user chose to skip
+it for now rather than take on that scope mid-session. **Practical
+implication: don't run the full pipeline against videos ≥30 min until this
+is fixed — use the 21-min (`CadW5Vyh-hg`) or 7-min (`SkxfKZgy9kw`) cached
+test videos instead, both under the chunking threshold.**
+
+Full-pipeline re-test was redirected to the 21-min `CadW5Vyh-hg` video (transcript
+already cached, under the 30-min chunking threshold) — see result below if
+completed, or "Next up" if still pending as of this write-up.
+
 ## Plan of record (per architecture doc)
 
 Vendor `SamurAIGPT/AI-Youtube-Shorts-Generator` into `vendor/` (done, as a
