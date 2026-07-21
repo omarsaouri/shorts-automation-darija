@@ -18,6 +18,17 @@ CREATE TABLE IF NOT EXISTS source_videos (
     discovered_at TEXT NOT NULL,
     downloaded_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS clips (
+    clip_id TEXT PRIMARY KEY,
+    source_video_id TEXT NOT NULL REFERENCES source_videos(video_id),
+    title TEXT,
+    score REAL,
+    status TEXT NOT NULL DEFAULT 'pending_qc',
+    clip_path TEXT,
+    posted_video_id TEXT,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -25,8 +36,8 @@ def get_connection(db_path: Path = DB_PATH) -> sqlite3.Connection:
     """Open (creating if needed) the state.db connection with schema applied.
 
     Inputs: db_path, path to the SQLite file (defaults to state.db at repo root).
-    Outputs: sqlite3.Connection with source_videos table present.
-    Tables touched: creates `source_videos` if missing.
+    Outputs: sqlite3.Connection with source_videos and clips tables present.
+    Tables touched: creates `source_videos` and `clips` if missing.
     """
     conn = sqlite3.connect(db_path)
     conn.executescript(_SCHEMA)

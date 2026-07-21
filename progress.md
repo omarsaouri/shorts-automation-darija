@@ -455,6 +455,73 @@ duration-bounds unit test. 61 tests passing total, `black`/`ruff` clean.
 Committed on `fix/highlights-giant-clip-collapse`, branched off `main`.
 Not yet merged.
 
+## processor.py built — first orchestration stage, wires in all overrides (2026-07-21)
+
+Built the next architecture-doc component (§3.4 pipeline detail): `processor.py`
+wraps vendor's `generate_shorts(mode="local")` and adds caption burn-in on
+top, per CLAUDE.md's "call `generate_shorts(...)` rather than reimplementing
+its flow."
+
+**Real design conflict, resolved with the user before writing code:** the
+architecture doc's §3.5/§4 pipeline diagram puts scene detection *before*
+cropping — it's meant to snap each highlight's start/end onto the nearest
+real scene cut so a clip doesn't start/end mid-shot. But `generate_shorts`
+crops internally with no hook to inject that, and CLAUDE.md forbids
+reimplementing its flow to add one. Confirmed the fix: since
+`pipeline._run_local` re-resolves `crop_highlights_local` via a fresh
+`from .local.clipper import crop_highlights_local` on every call (a plain
+module-attribute lookup, not a bound closure — verified this directly with
+a throwaway monkeypatch-after-import test before relying on it), a new
+override can monkeypatch that one attribute and snap boundaries onto scene
+cuts before delegating to the real crop — satisfies both docs at once, same
+single-function-patch pattern as every other override in this repo.
+
+**New: `darija_overrides/scene_snap_crop.py`.** Uses `PySceneDetect`
+(`scenedetect` package, added to `requirements.txt`) to find scene-cut
+timestamps in the source video, then snaps each highlight's `start_time`/
+`end_time` to the nearest cut within `MAX_SNAP_DISTANCE_SECONDS = 2.0` —
+close cuts are trusted as "the same edit, just imprecise"; anything farther
+is left alone rather than snapping a highlight onto an unrelated cut. Falls
+back to unsnapped boundaries if scene detection itself fails or if snapping
+would collapse the window. 7 tests, all with `_original_crop_highlights_local`
+faked (never invokes real scene detection/ffmpeg in the suite).
+
+**New: `processor.py`.** `install_overrides()` installs all six
+`darija_overrides` patches (`llm_ollama`, `transcriber_darija`,
+`clipper_stable`, `highlights_chunking`, `highlights_duration_filter`,
+`scene_snap_crop`) before calling `generate_shorts`; `process_video(video_id, ...)`
+then hands each rendered short + the full transcript to
+`captioner.burn_captions`, skipping captioning for any clip whose crop
+already failed. Writes `state.db`: `source_videos.status` goes
+`queued → processing → captioned` (or `failed`), and a `clips` row is
+written per rendered short (`clip_id = "{video_id}_{index}"`,
+`status = 'pending_qc'` once captioned — ready for `qc_gate.py` to pick up,
+`'failed'` otherwise). `source_videos.downloaded_at` is set once the whole
+run succeeds, not right after the internal download step — `generate_shorts`
+doesn't expose per-step timestamps, documented as a known granularity limit
+in the code.
+
+**`db.py` schema extended** with the `clips` table from architecture doc
+§7 (`clip_id`, `source_video_id`, `score`, `status`, `posted_video_id`) plus
+`title`/`clip_path`/`created_at` for what `processor.py` and later
+`qc_gate.py`/`publisher.py` actually need to read/write.
+
+Tests (`tests/test_processor.py`, per CLAUDE.md's spec for this stage):
+`generate_shorts` and `captioner.burn_captions` mocked, verifying the
+hand-off between them (right args, right order), output format (duration =
+`end_time - start_time`, captioned-path presence), `clips`/`source_videos`
+row content, and the failure path (`generate_shorts` raising marks
+`source_videos.status = 'failed'` and re-raises rather than swallowing).
+74 tests passing total, `black`/`ruff` clean.
+
+Verified `processor.py` imports cleanly and `install_overrides()` actually
+patches all three previously-separate vendor modules
+(`shorts_generator.local.clipper`, `shorts_generator.highlights` ×2) by
+inspecting live identity after calling it — not yet run end-to-end against
+a real video (that's the top "Next up" item).
+
+Committed on `stage/processor`, branched off `main`. Not yet merged.
+
 ## Plan of record (per architecture doc)
 
 Vendor `SamurAIGPT/AI-Youtube-Shorts-Generator` into `vendor/` (done, as a
@@ -474,12 +541,15 @@ against real production sources.
 
 ## Next up
 
-- [ ] Merge `fix/highlights-giant-clip-collapse` into `main`
-- [ ] Wire `darija_overrides.{highlights_chunking,highlights_duration_filter}.install()`
-      into whatever calls `get_highlights` once `processor.py` exists — no
-      call site exists in this repo yet
+- [ ] Merge `stage/processor` into `main`
+- [ ] Run `processor.py` end-to-end against a real cached video
+      (`SkxfKZgy9kw` or `CadW5Vyh-hg`) — only unit-tested with
+      `generate_shorts`/`captioner.burn_captions` mocked so far, no real
+      run yet
 - [ ] Re-run the *full* pipeline against a video ≥30 min now that the
       chunking bug is fixed (previously blocked on this)
+- [ ] `qc_gate.py` — next real gate after `processor.py`; reads `clips`
+      rows with `status = 'pending_qc'`
 - [ ] Review the re-run output in `clips/KazZdpoVvio/` (3 captioned clips)
       — confirm captions are now readable phrase-sized cues, not walls of
       text, and that the face-tracking fix visibly holds up over the full
