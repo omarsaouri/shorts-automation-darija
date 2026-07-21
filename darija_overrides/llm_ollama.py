@@ -54,6 +54,66 @@ def _strip_trailing_commas(text: str) -> str:
     return _TRAILING_COMMA_RE.sub(r"\1", text)
 
 
+def _salvage_truncated_highlights(text: str) -> str:
+    """Atlas-Chat sometimes stops generating mid-string, leaving a
+    `{"highlights":[...]}` response with an unterminated final element
+    (confirmed against real Ollama calls: `done_reason` is "stop", not
+    "length" — this is the model ending its own generation early, not an
+    HTTP/token-limit cutoff, so there's no missing text to recover).
+
+    Recovers whatever complete highlight objects came before the cutoff by
+    scanning for the last `}` that closes an element directly inside the
+    top-level "highlights" array, then truncating there and re-closing the
+    array/object. Stops as soon as that array closes cleanly — also seen
+    once: the model repeating `"highlights":[...]` as several sibling keys
+    instead of one array with several elements, which Python's json.loads
+    would otherwise silently resolve by keeping only the *last* key's
+    value, dropping the earlier (valid) ones with no error. No-op (returns
+    `text` unchanged) if there's no `[` at all (e.g. the small
+    content-type-detection response) or no complete element was found —
+    the existing retry-on-invalid-output loop already covers those cases.
+    # ponytail: fixes only this one observed failure mode, same rationale
+    # as the two fixes above.
+    """
+    start = text.find("[")
+    if start == -1:
+        return text
+
+    depth = 0
+    in_string = False
+    escape = False
+    last_complete_end: Optional[int] = None
+
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+            if ch == "}" and depth == 1:
+                last_complete_end = i + 1
+            elif ch == "]" and depth == 0:
+                # The array closed cleanly — stop here rather than folding
+                # in anything after it (trailing garbage, or a repeated
+                # "highlights" key).
+                last_complete_end = i
+                break
+
+    if last_complete_end is None:
+        return text
+    return text[: start + 1] + text[start + 1 : last_complete_end] + "]}"
+
+
 def call_local_llm(prompt: str, model: Optional[str] = None) -> str:
     """Send `prompt` to a local Ollama model, return its raw text response.
 
@@ -89,7 +149,9 @@ def call_local_llm(prompt: str, model: Optional[str] = None) -> str:
         # model output", which is already handled and bounded.
         print(f"[llm/ollama] request failed: {e}", flush=True)
         return ""
-    return _strip_trailing_commas(_fix_arabic_json_punctuation(data["response"]))
+    return _strip_trailing_commas(
+        _fix_arabic_json_punctuation(_salvage_truncated_highlights(data["response"]))
+    )
 
 
 def install() -> None:
