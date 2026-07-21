@@ -23,3 +23,7 @@ torch
 transformers
 peft
 accelerate
+
+# darija_overrides/scene_snap_crop.py: architecture doc §3.5, scene-cut
+# detection to snap highlight boundaries onto clean visual edits.
+scenedetect
