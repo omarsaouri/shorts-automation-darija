@@ -375,6 +375,43 @@ Full-pipeline re-test was redirected to the 21-min `CadW5Vyh-hg` video (transcri
 already cached, under the 30-min chunking threshold) — see result below if
 completed, or "Next up" if still pending as of this write-up.
 
+## highlights.py chunking bug fixed (2026-07-21)
+
+Picked up the chunking bug documented above ("Found, NOT fixed") — root
+cause confirmed and fixed via a new override,
+`darija_overrides/highlights_chunking.py`.
+
+**Root cause:** vendor's `chunk_transcript` builds each chunk's `segments`
+from the transcript's *absolute* (whole-video) timestamps and never rebases
+them to the chunk's own start. `build_transcript_text` then shows the model
+absolute time labels (chunk 2 of a long video shows `[1146.2s]` onward), so
+the model naturally answers with highlights in that same absolute range.
+But `call_highlight_api` clamps against `chunk["duration"]` — the chunk's
+*relative* span (e.g. `1200`) — so every highlight past the first chunk gets
+clamped to zero-length and dropped, and `call_highlight_api` raises after 3
+failed attempts, aborting the whole multi-chunk loop.
+
+**Fix:** `chunk_transcript_rebased` delegates to the vendored
+`chunk_transcript` for all the actual chunking math (size, overlap, offset)
+and only rebases each chunk's segment timestamps to start at 0, matching the
+relative `duration`/clamp the rest of the pipeline already assumes.
+`install()` monkeypatches the single `chunk_transcript` attribute on
+`shorts_generator.highlights`, same one-function-patch pattern as
+`clipper_stable.py` — `call_highlight_api`, `dedupe_highlights`, and
+`get_highlights` itself stay unmodified vendor logic.
+
+Tests in `tests/test_highlights_chunking.py`: one reproduces the bug against
+the *unpatched* vendor function directly (asserts it raises `RuntimeError`),
+one confirms `install()` fixes it end-to-end through the real
+`get_highlights` (highlights from a later chunk survive and land at the
+correct absolute time), plus an `install()`-patches-vendor test and a
+rebasing-math test. 53 tests passing total, `black`/`ruff` clean.
+
+Committed on `fix/highlights-chunk-timestamps`, branched off `main`.
+Not yet merged — this override still needs to be wired into whatever calls
+`get_highlights` once `processor.py` exists (see "Next up"); no such call
+site exists in this repo yet to add it to today.
+
 ## Plan of record (per architecture doc)
 
 Vendor `SamurAIGPT/AI-Youtube-Shorts-Generator` into `vendor/` (done, as a
@@ -394,18 +431,15 @@ against real production sources.
 
 ## Next up
 
-- [ ] Branch + commit the memory-overload fix (currently uncommitted on
-      `main` — `darija_overrides/transcriber_darija.py` windowed
-      transcription + `torch.mps.synchronize()`,
-      `darija_overrides/llm_ollama.py` `keep_alive: 0`, both test files)
-- [ ] Re-test the fix against the 42-min video that originally crashed
-      (`Zhj07EXj4HY`) — only 7-min and 21-min have been verified so far
-- [ ] Re-run the *full* pipeline (not just transcribe-only) end-to-end at
-      the 21-min+ length now that the transcriber fix is in place
+- [ ] Merge `fix/highlights-chunk-timestamps` into `main`
+- [ ] Wire `darija_overrides.highlights_chunking.install()` into whatever
+      calls `get_highlights` once `processor.py` exists — no call site
+      exists in this repo yet
+- [ ] Re-run the *full* pipeline against a video ≥30 min now that the
+      chunking bug is fixed (previously blocked on this)
 - [ ] Look into `get_highlights` returning only 1 highlight spanning
       almost the entire 7-min `SkxfKZgy9kw` video instead of several short
       clips — likely a local-LLM prompt-adherence or dedupe-overlap issue
-- [ ] Merge/review `fix/real-video-test-findings` into `main`
 - [ ] Review the re-run output in `clips/KazZdpoVvio/` (3 captioned clips)
       — confirm captions are now readable phrase-sized cues, not walls of
       text, and that the face-tracking fix visibly holds up over the full
