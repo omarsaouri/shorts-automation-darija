@@ -412,6 +412,49 @@ Not yet merged — this override still needs to be wired into whatever calls
 `get_highlights` once `processor.py` exists (see "Next up"); no such call
 site exists in this repo yet to add it to today.
 
+## get_highlights giant-highlight collapse bug root-caused and fixed (2026-07-21)
+
+Picked up the "separate, unfixed issue" logged above (TRK 17): on the 7-min
+`SkxfKZgy9kw` video, `get_highlights` sometimes returned a single highlight
+spanning almost the entire video instead of several short clips. Not the
+chunking bug — this video is well under the 1800s chunking threshold, so
+`chunk_transcript` never runs; confirmed as a distinct root cause.
+
+**Reproduced directly against the real transcript and a live Ollama call**
+(re-parsed `output/source_SkxfKZgy9kw.srt` into a transcript dict, called
+`call_highlight_api` against it 3 times). Result varied run to run
+(temperature 0.7): one run returned 4 well-formed short highlights (23-71s
+each); another returned 4 highlights where most spanned **226-419 seconds
+each** — i.e. Atlas-Chat-9B does not reliably follow
+`HIGHLIGHT_SYSTEM_PROMPT`'s own stated "20-180s" duration bounds. Traced the
+actual collapse mechanism: `_sanitize_highlights` never checks duration at
+all (only `start >= 0`, `end > start`, clamp to video length), so an
+oversized highlight sails through untouched; `dedupe_highlights` then keeps
+whichever *overlapping* highlight has the highest score — a video-spanning
+highlight overlaps essentially every other candidate, so if it scores
+highest (or ties), every well-formed short highlight gets evicted as
+"overlapping," collapsing the result down to that one giant clip.
+
+**Not a deterministic code bug like the chunking one** — a local 9B model
+won't reliably obey a prose duration instruction — so the fix stops
+trusting the model on duration and enforces the prompt's own stated bounds
+in code instead: new `darija_overrides/highlights_duration_filter.py`
+monkeypatches only `_sanitize_highlights` to additionally drop any
+highlight outside `[20, 180]` seconds, before `dedupe_highlights` ever sees
+it. If every candidate from one attempt is out of bounds, `call_highlight_api`
+already treats an empty list the same as "no valid highlights" and retries
+— no extra plumbing needed. `dedupe_highlights` and `get_highlights` itself
+stay unmodified vendor logic.
+
+Tests in `tests/test_highlights_duration_filter.py`: reproduces the exact
+captured real-world scenario (one giant highlight + 3 well-formed short
+ones, unpatched vendor collapses to just the giant one; patched keeps the
+3 short ones), an `install()`-patches-vendor test, and a parametrized
+duration-bounds unit test. 61 tests passing total, `black`/`ruff` clean.
+
+Committed on `fix/highlights-giant-clip-collapse`, branched off `main`.
+Not yet merged.
+
 ## Plan of record (per architecture doc)
 
 Vendor `SamurAIGPT/AI-Youtube-Shorts-Generator` into `vendor/` (done, as a
@@ -431,15 +474,12 @@ against real production sources.
 
 ## Next up
 
-- [ ] Merge `fix/highlights-chunk-timestamps` into `main`
-- [ ] Wire `darija_overrides.highlights_chunking.install()` into whatever
-      calls `get_highlights` once `processor.py` exists — no call site
-      exists in this repo yet
+- [ ] Merge `fix/highlights-giant-clip-collapse` into `main`
+- [ ] Wire `darija_overrides.{highlights_chunking,highlights_duration_filter}.install()`
+      into whatever calls `get_highlights` once `processor.py` exists — no
+      call site exists in this repo yet
 - [ ] Re-run the *full* pipeline against a video ≥30 min now that the
       chunking bug is fixed (previously blocked on this)
-- [ ] Look into `get_highlights` returning only 1 highlight spanning
-      almost the entire 7-min `SkxfKZgy9kw` video instead of several short
-      clips — likely a local-LLM prompt-adherence or dedupe-overlap issue
 - [ ] Review the re-run output in `clips/KazZdpoVvio/` (3 captioned clips)
       — confirm captions are now readable phrase-sized cues, not walls of
       text, and that the face-tracking fix visibly holds up over the full
