@@ -584,12 +584,95 @@ clean.
 Committed on `fix/llm-json-truncation`, branched off `main`. Not yet
 merged.
 
+## qc_gate.py built — QC gate, next real gate after processor.py (2026-07-22)
+
+Built the next architecture-doc component (§3.8/§5): `qc_gate.py`, the last
+checkpoint before a clip is eligible for `publisher.py`. Reads `clips` rows
+at `status IN ('pending_qc', 'held')` and runs each through, in order: dedup,
+score threshold, format validation, source-diversity throttle, then a daily
+cap — exactly the doc's flowchart plus its sequence diagram's "filter to top
+10/day" step, which the doc leaves ambiguous as to which component owns it.
+
+**Resolved three real ambiguities with the user before writing code** (per
+CLAUDE.md's "ask rather than guess on QC thresholds"):
+- **Dedup = content-fingerprint match** against already-`posted` clips, not
+  same-source-video identity — catches a re-uploaded/re-shared video with the
+  same underlying content, not just literal reprocessing of the same
+  `video_id`.
+- **Score threshold = 60** (vendor's highlight scoring is 0–100, confirmed in
+  `highlights.py:154`).
+- **Source-diversity cap = 2 clips per source video** per batch (3rd+ is
+  `held`, not rejected — matches the flowchart's distinct HOLD outcome).
+- **`qc_gate.py` itself owns the daily cap (10/day)**, sorting eligible
+  survivors by score; `publisher.py` will stay a dumb consumer of
+  `status='queued'`.
+
+**`db.py` schema migration, additive only:** `clips` gains `fingerprint`
+(content hash) and `qc_reason` (human-readable reject/hold reason, for the
+future `reporter.py`'s "QC rejections and why"). New `_ensure_clip_columns`
+runs `PRAGMA table_info` + `ALTER TABLE ADD COLUMN` for whichever columns are
+missing, called from `get_connection()` — migrates the real, already-populated
+`state.db` in place rather than wiping it.
+
+**`processor.py` now computes each clip's fingerprint at record time,** in
+`_caption_short`: hashes the clip's own transcript text (via
+`captioner._segments_for_window`, reused rather than re-windowing), not the
+LLM-generated title/hook_sentence — those vary run to run at Ollama's
+temperature 0.7, so hashing them would fail to recognize the same content
+across a reprocessing run.
+
+**`qc_gate.py` design:** `run_qc_gate(conn=None) -> dict` (same
+connection-injectable shape as `processor.process_video`) plus an `argparse`
+`__main__`. Per-clip checks (dedup → score → format) are independent and
+short-circuit on first failure; format validation checks the `.captioned.mp4`
+filename suffix (cheap, no ffprobe needed) plus one `ffprobe` call
+(`_probe_clip`) for duration/aspect-ratio, same subprocess-call pattern as
+`captioner._probe_dimensions`. Clips passing all three go through a
+source-diversity pass (score-desc order, `SOURCE_DIVERSITY_CAP` per
+`source_video_id`), then a daily-cap pass (score-desc, top `DAILY_CLIP_CAP`
+queued). All five thresholds are hardcoded module-level constants, matching
+this repo's existing convention for other pipeline thresholds
+(`highlights_duration_filter.py`'s [20,180]s bounds, `scene_snap_crop.py`'s
+snap distance) rather than reading `config/channels.yaml` — no other
+threshold in the codebase reads from that file today, flagged as following
+established repo convention over the doc's folder-structure comment.
+
+No bypass flag/parameter anywhere in the file (hard constraint, verified by
+inspection — CLAUDE.md is explicit that this can't be added "for testing").
+
+Tests in `tests/test_qc_gate.py`: one passing + one failing case per
+architecture-doc branch, per CLAUDE.md's explicit requirement for this stage
+— dedup (fingerprint match/mismatch), score threshold (above/below 60), each
+format failure mode (missing `.captioned.mp4` suffix, duration ≥ 60s, wrong
+aspect ratio) tested separately, source-diversity throttle (3 clips same
+source → top 2 queued, 3rd held), daily cap (12 eligible clips across 12
+sources → top 10 queued, 2 held), a `held` clip from a simulated previous run
+being reconsidered, and a `rejected_*` clip staying terminal (not
+reconsidered). `tests/test_processor.py` extended with one assertion that
+`_record_clip` writes a non-null `fingerprint`. 93 tests passing total,
+`black`/`ruff` clean.
+
+**Dry-run verified against the real `state.db`** from the earlier
+`SkxfKZgy9kw` end-to-end run (3 real clips, durations 23.6s/23.9s/56.1s, all
+`.captioned.mp4`, 9:16, scores 90/80/75): the two higher-scoring clips
+correctly queued, the third correctly held on the source-diversity cap (same
+`source_video_id`, cap is 2) with reason `"source diversity cap (2) reached
+for SkxfKZgy9kw"` — first real exercise of this stage against genuine
+pipeline output, not just mocked tests.
+
+Committed on `stage/qc-gate`, merged to `main` (`11416d0`). Notion: TRK-20
+(already existed as a Backlog Tracker item — updated rather than duplicated)
+→ Done; added a Docs entry (Category: Decision) recording the four threshold
+resolutions above, and a Changelog entry for the merge.
+
 ## Plan of record (per architecture doc)
 
 Vendor `SamurAIGPT/AI-Youtube-Shorts-Generator` into `vendor/` (done, as a
 submodule) for download/transcribe/score/crop, patched only via
-`darija_overrides/`. Build net-new: `watcher.py` (done), scene detection,
-caption burn-in, `qc_gate.py`, `publisher.py`, `reporter.py`, scheduler.
+`darija_overrides/`. Build net-new: `watcher.py` (done), scene detection
+(done, via `darija_overrides/scene_snap_crop.py`), caption burn-in (done,
+`captioner.py`), `qc_gate.py` (done). Still open: `publisher.py`,
+`reporter.py`, scheduler.
 
 ## Test run (2026-07-12)
 
@@ -603,11 +686,11 @@ against real production sources.
 
 ## Next up
 
-- [ ] Merge `fix/llm-json-truncation` into `main`
 - [ ] Re-run the *full* pipeline against a video ≥30 min now that the
       chunking bug is fixed (previously blocked on this)
-- [ ] `qc_gate.py` — next real gate after `processor.py`; reads `clips`
-      rows with `status = 'pending_qc'`
+- [ ] `publisher.py` — quota accounting (1,600 units/upload, 10,000/day
+      budget) + retry/halt behavior; consumes `clips` rows at
+      `status = 'queued'` (written by `qc_gate.py`)
 - [ ] Full RTL correctness pass on `captioner.py` — one real captioned
       frame (`output/short_01.captioned.mp4`) looked correctly shaped and
       right-aligned, which is promising, but that's one frame, not a real
@@ -625,12 +708,7 @@ against real production sources.
 - [ ] Extend `highlights.py`'s system prompt with Darija/code-switch
       few-shot examples (still using the vendored file's default English
       framing today)
-- [ ] `processor.py` — orchestrate vendor's `generate_shorts(mode="local")`
-      + scene detection + `captioner.burn_captions(...)`; must add
-      `vendor/ai-youtube-shorts-generator` to `sys.path` and call
-      `darija_overrides.{llm_ollama,transcriber_darija,clipper_stable}.install()`
-      before invoking it
-- [ ] `qc_gate.py`, `publisher.py`, `reporter.py`, scheduler
+- [ ] `reporter.py`, scheduler
 
 ## Open questions
 
