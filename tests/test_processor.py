@@ -95,14 +95,15 @@ def test_process_video_writes_clips_rows_with_correct_status():
         processor.process_video("abc123", conn=conn)
 
     rows = conn.execute(
-        "SELECT clip_id, status, clip_path, score FROM clips ORDER BY clip_id"
+        "SELECT clip_id, status, clip_path, score, fingerprint FROM clips ORDER BY clip_id"
     ).fetchall()
-    assert rows[0] == (
+    assert rows[0][:4] == (
         "abc123_01",
         "pending_qc",
         "/clips/abc123/short_01.captioned.mp4",
         90.0,
     )
+    assert rows[0][4]  # fingerprint written, non-empty
     assert rows[1][1] == "failed"
     assert rows[1][2] is None
 

@@ -15,6 +15,7 @@ Reads/writes state.db: `source_videos` (status transitions) and `clips`
 """
 
 import argparse
+import hashlib
 import logging
 import sys
 from datetime import datetime, timezone
@@ -54,29 +55,55 @@ def install_overrides() -> None:
     scene_snap_crop.install()
 
 
+def _fingerprint(
+    transcript_segments: List[Dict], start_time: float, end_time: float
+) -> str:
+    """Content hash of a clip's own spoken transcript, for qc_gate.py's dedup
+    check. Uses the actual transcript text (not the LLM-generated title/hook,
+    which varies run to run at Ollama's temperature=0.7) so reprocessing the
+    same underlying content still fingerprints the same.
+    """
+    clip_segments = captioner._segments_for_window(
+        transcript_segments, start_time, end_time
+    )
+    text = " ".join(s["text"] for s in clip_segments)
+    normalized = " ".join(text.lower().split())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 def _caption_short(short: Dict, transcript_segments: List[Dict]) -> Dict:
     """Burn captions onto one generate_shorts()-rendered clip.
 
     Inputs: short, one entry from generate_shorts()'s "shorts" list.
         transcript_segments, the full source video's transcript segments.
     Outputs: `short` plus `captioned_path` (None if the crop itself already
-        failed, or if burn-in raises — `caption_error` is set in that case).
+        failed, or if burn-in raises — `caption_error` is set in that case)
+        and `fingerprint` (content hash of the clip's transcript window).
     """
+    start_time = float(short["start_time"])
+    end_time = float(short["end_time"])
+    fingerprint = _fingerprint(transcript_segments, start_time, end_time)
+
     clip_url = short.get("clip_url")
     if not clip_url:
-        return {**short, "captioned_path": None}
+        return {**short, "captioned_path": None, "fingerprint": fingerprint}
 
     try:
         captioned_path = captioner.burn_captions(
             clip_url,
             transcript_segments,
-            window_start=float(short["start_time"]),
-            window_end=float(short["end_time"]),
+            window_start=start_time,
+            window_end=end_time,
         )
-        return {**short, "captioned_path": captioned_path}
+        return {**short, "captioned_path": captioned_path, "fingerprint": fingerprint}
     except Exception as e:
         logger.exception("caption burn-in failed for %s", clip_url)
-        return {**short, "captioned_path": None, "caption_error": str(e)}
+        return {
+            **short,
+            "captioned_path": None,
+            "caption_error": str(e),
+            "fingerprint": fingerprint,
+        }
 
 
 def _record_clip(
@@ -91,8 +118,8 @@ def _record_clip(
     clip_id = f"{source_video_id}_{index:02d}"
     conn.execute(
         "INSERT OR REPLACE INTO clips "
-        "(clip_id, source_video_id, title, score, status, clip_path, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "(clip_id, source_video_id, title, score, status, clip_path, fingerprint, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (
             clip_id,
             source_video_id,
@@ -100,6 +127,7 @@ def _record_clip(
             float(short.get("score", 0)),
             "pending_qc" if short.get("captioned_path") else "failed",
             short.get("captioned_path") or short.get("clip_url"),
+            short.get("fingerprint"),
             created_at,
         ),
     )
