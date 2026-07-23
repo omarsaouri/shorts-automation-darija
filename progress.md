@@ -665,6 +665,34 @@ Committed on `stage/qc-gate`, merged to `main` (`11416d0`). Notion: TRK-20
 → Done; added a Docs entry (Category: Decision) recording the four threshold
 resolutions above, and a Changelog entry for the merge.
 
+## Clip output-path collision bug fixed (2026-07-23)
+
+Found via a full-pipeline test run: `pipeline.py`'s `_run_local` calls
+vendor's `crop_highlights_local(source_path, highlights, aspect_ratio,
+out_dir=None)` without ever passing `out_dir`, so every processed video's
+clips landed at the same shared `output/short_01/02/03(.captioned).mp4`
+filenames — processing a second video silently overwrote the first video's
+clip files on disk, corrupting any `clips` DB rows (including already-
+`queued` ones) still pointing at those paths.
+
+Since `darija_overrides/scene_snap_crop.py` is already the sole owner of
+the `crop_highlights_local` monkeypatch (vendor's plain attribute
+assignment means only one override can own a given function — a second
+independent patch would just clobber this one depending on install order),
+the fix lives there rather than as a separate override: `_video_out_dir`
+derives a per-video output dir from `source_path`'s own filename, which
+`local/downloader.py` always names `source_{video_id}.ext` — so different
+videos never collide. `crop_highlights_local_snapped` now defaults to it
+whenever the caller doesn't pass `out_dir` explicitly.
+
+4 new tests in `tests/test_scene_snap_crop.py` (filename parsing, fallback
+for non-matching filenames, default-vs-explicit `out_dir` on the patched
+crop function). 97 tests passing total, `black`/`ruff` clean on our own
+code (vendor/ has pre-existing lint noise, untouched third-party code, not
+ours to fix).
+
+Committed on `fix/clip-output-collision`, branched off `main`.
+
 ## Plan of record (per architecture doc)
 
 Vendor `SamurAIGPT/AI-Youtube-Shorts-Generator` into `vendor/` (done, as a
