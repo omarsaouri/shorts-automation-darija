@@ -67,6 +67,46 @@ def test_crop_highlights_local_snapped_falls_back_when_scene_detection_fails():
     assert captured["highlights"][0]["end_time"] == 89.5
 
 
+def test_video_out_dir_derives_from_source_filename():
+    assert ssc._video_out_dir("output/source_abc123.mp4") == "output/abc123"
+
+
+def test_video_out_dir_falls_back_when_filename_doesnt_match_pattern():
+    assert ssc._video_out_dir("output/some_other_file.mp4") == "output"
+
+
+def test_crop_highlights_local_snapped_defaults_out_dir_per_video():
+    highlights = [{"title": "h1", "start_time": 41.0, "end_time": 89.5, "score": 80}]
+    captured = {}
+
+    def fake_original(source_path, highlights, aspect_ratio="9:16", out_dir=None):
+        captured["out_dir"] = out_dir
+        return []
+
+    with patch.object(ssc, "_detect_cut_seconds", return_value=[]):
+        ssc._original_crop_highlights_local = fake_original
+        ssc.crop_highlights_local_snapped("output/source_abc123.mp4", highlights)
+
+    assert captured["out_dir"] == "output/abc123"
+
+
+def test_crop_highlights_local_snapped_respects_explicit_out_dir():
+    highlights = [{"title": "h1", "start_time": 41.0, "end_time": 89.5, "score": 80}]
+    captured = {}
+
+    def fake_original(source_path, highlights, aspect_ratio="9:16", out_dir=None):
+        captured["out_dir"] = out_dir
+        return []
+
+    with patch.object(ssc, "_detect_cut_seconds", return_value=[]):
+        ssc._original_crop_highlights_local = fake_original
+        ssc.crop_highlights_local_snapped(
+            "output/source_abc123.mp4", highlights, out_dir="custom/dir"
+        )
+
+    assert captured["out_dir"] == "custom/dir"
+
+
 def test_install_patches_vendor_crop_highlights_local():
     import shorts_generator.local.clipper as vendor_clipper
 

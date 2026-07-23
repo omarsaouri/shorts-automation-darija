@@ -12,11 +12,46 @@ lookup, not a bound closure) — so monkeypatching that one attribute is
 enough to intersect scene detection into the flow without touching
 `generate_shorts` itself, the same single-function-patch pattern as
 `clipper_stable.py`/`highlights_chunking.py`/`highlights_duration_filter.py`.
+
+**Also fixes a real output-path collision bug found via a full-pipeline test
+run (2026-07-22):** vendor's `crop_highlights_local(source_path, highlights,
+aspect_ratio, out_dir=None)` already accepts a per-call `out_dir`, but
+`pipeline.py`'s `_run_local` never passes one, so it always defaults to the
+shared `LOCAL_OUTPUT_DIR` and every video's clips land at the same
+`short_01/02/03(.captioned).mp4` filenames — processing a second video
+silently overwrites the first video's clip files on disk, corrupting any
+`clips` DB rows (including already-`queued` ones) still pointing at those
+paths. Since this module is the sole owner of the `crop_highlights_local`
+monkeypatch (vendor's plain attribute assignment means only one override can
+own a given function — a second independent patch here would just clobber
+this one depending on install order), the fix lives here rather than as a
+separate override: default `out_dir` to a path derived from `source_path`'s
+own filename, which `local/downloader.py` always names
+`source_{video_id}.ext` — so different videos never collide.
 """
 
+import os
+import re
 from typing import Callable, Dict, List, Optional
 
 import shorts_generator.local.clipper as _vendor
+
+_SOURCE_FILENAME_RE = re.compile(r"^source_(?P<video_id>.+)\.\w+$")
+
+
+def _video_out_dir(source_path: str) -> str:
+    """Per-video output dir derived from source_path's own filename, so two
+    videos processed back to back never collide on shared short_NN.mp4
+    filenames. Falls back to source_path's own parent dir if the filename
+    doesn't match the source_{video_id}.ext pattern (e.g. a hand-built path
+    in a test).
+    """
+    base_dir = os.path.dirname(source_path) or "."
+    match = _SOURCE_FILENAME_RE.match(os.path.basename(source_path))
+    if not match:
+        return base_dir
+    return os.path.join(base_dir, match.group("video_id"))
+
 
 # A detected cut within this many seconds of the LLM's chosen boundary is
 # trusted as "the same edit, just imprecise" and snapped to. Anything
@@ -61,8 +96,11 @@ def crop_highlights_local_snapped(
     highlight's start/end onto the nearest real scene cut (see module
     docstring). Falls back to unsnapped boundaries if scene detection
     itself fails — a crop on the LLM's original timing beats no clip at
-    all.
+    all. Also defaults out_dir to a per-video path (see module docstring)
+    when the caller doesn't pass one explicitly.
     """
+    out_dir = out_dir or _video_out_dir(source_path)
+
     try:
         cuts = _detect_cut_seconds(source_path)
     except Exception as e:
