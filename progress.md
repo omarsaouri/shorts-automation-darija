@@ -691,7 +691,36 @@ crop function). 97 tests passing total, `black`/`ruff` clean on our own
 code (vendor/ has pre-existing lint noise, untouched third-party code, not
 ours to fix).
 
-Committed on `fix/clip-output-collision`, branched off `main`.
+Committed on `fix/clip-output-collision`, branched off `main`. Merged to
+`main`.
+
+**Real two-video regression check (2026-07-23, post-merge):** ran
+`processor.py` back-to-back against two different cached videos
+(`SkxfKZgy9kw`, 7-min, then `CadW5Vyh-hg`, 21-min — both already
+downloaded/transcribed from earlier sessions, both under the 30-min
+chunking threshold), `--num-clips 1` each, to reproduce the actual
+collision scenario end-to-end (live Ollama scoring, live PySceneDetect,
+live ffmpeg/OpenCV crop, live caption burn-in).
+
+Result: **no collision.** `output/SkxfKZgy9kw/short_01(.captioned).mp4` and
+`output/CadW5Vyh-hg/short_01(.captioned).mp4` landed in their own
+per-video dirs; sha256 of video 1's clip files was identical before and
+after video 2 ran, confirming video 2 never touched video 1's output.
+`state.db` shows both `source_videos` rows at `status='captioned'` and
+correct distinct `clip_path`s per video. The pre-fix collision artifacts
+(loose `output/short_01/02/03(.captioned).mp4` from an earlier run, and
+`clips` row `SkxfKZgy9kw_03` still pointing at `output/short_03.captioned.mp4`,
+already `rejected_format` from a prior QC pass) were left in place as-is,
+untouched by either run — not retroactively cleaned up, just no longer
+reachable by the fixed code path.
+
+Along the way, `CadW5Vyh-hg`'s first attempt hit the already-documented
+Ollama/Atlas-Chat-9B flakiness (`RuntimeError: ... invalid output after 3
+attempts`, one attempt timed out) — unrelated to this fix, failed clean
+(`source_videos.status` correctly set to `'failed'`, no `CadW5Vyh-hg`
+output dir created since crop was never reached, video 1's files
+untouched), and succeeded on a plain retry against the same cached
+transcript.
 
 ## Plan of record (per architecture doc)
 
