@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import wave
@@ -68,8 +69,21 @@ def test_group_words_into_segments_breaks_on_pause():
     ]
     result = td._group_words_into_segments(words)
     assert result == [
-        {"start": 0.0, "end": 1.0, "text": "hello world"},
-        {"start": 3.0, "end": 3.5, "text": "goodbye"},
+        {
+            "start": 0.0,
+            "end": 1.0,
+            "text": "hello world",
+            "words": [
+                {"start": 0.0, "end": 0.5, "text": "hello"},
+                {"start": 0.5, "end": 1.0, "text": "world"},
+            ],
+        },
+        {
+            "start": 3.0,
+            "end": 3.5,
+            "text": "goodbye",
+            "words": [{"start": 3.0, "end": 3.5, "text": "goodbye"}],
+        },
     ]
 
 
@@ -89,7 +103,12 @@ def test_group_words_into_segments_skips_empty_and_none_start():
         {"timestamp": (1.0, 1.5), "text": "kept"},
     ]
     assert td._group_words_into_segments(words) == [
-        {"start": 1.0, "end": 1.5, "text": "kept"}
+        {
+            "start": 1.0,
+            "end": 1.5,
+            "text": "kept",
+            "words": [{"start": 1.0, "end": 1.5, "text": "kept"}],
+        }
     ]
 
 
@@ -128,7 +147,17 @@ def test_run_darija_transcription_windows_wav_groups_words_and_cleans_up():
     mock_remove.assert_called_once_with("/tmp/fake.wav")
     assert result == {
         "duration": 1.0,
-        "segments": [{"start": 0.0, "end": 1.0, "text": "hi there"}],
+        "segments": [
+            {
+                "start": 0.0,
+                "end": 1.0,
+                "text": "hi there",
+                "words": [
+                    {"start": 0.0, "end": 0.5, "text": "hi"},
+                    {"start": 0.5, "end": 1.0, "text": "there"},
+                ],
+            }
+        ],
     }
 
 
@@ -222,25 +251,28 @@ def test_flush_accelerator_cache_runs_without_error():
     td._flush_accelerator_cache()
 
 
-def test_transcribe_local_reuses_cache_without_running_model():
-    with (
-        patch.object(td, "_vendor") as mock_vendor,
-        patch("os.path.getmtime", return_value=1.0),
-    ):
-        mock_vendor._transcript_cache_path.return_value.exists.return_value = True
-        mock_vendor._transcript_cache_path.return_value.stat.return_value.st_mtime = 2.0
-        mock_vendor._load_srt_cache.return_value = _segments("cached line")
+def test_transcribe_local_reuses_cache_without_running_model(tmp_path):
+    media_path = tmp_path / "media.mp4"
+    media_path.write_bytes(b"fake")
+    cache_path = tmp_path / "media.json"
+    cache_path.write_text(json.dumps(_segments("cached line")), encoding="utf-8")
+
+    with patch.object(td, "_vendor") as mock_vendor:
+        mock_vendor._transcript_cache_path.return_value = tmp_path / "media.srt"
 
         with patch.object(td, "_run_darija_transcription") as mock_run:
-            result = td.transcribe_local("media.mp4")
+            result = td.transcribe_local(str(media_path))
 
-        mock_run.assert_not_called()
-        assert result == _segments("cached line")
+    mock_run.assert_not_called()
+    assert result == _segments("cached line")
 
 
-def test_transcribe_local_falls_back_when_garbled():
+def test_transcribe_local_falls_back_when_garbled(tmp_path):
+    media_path = tmp_path / "media.mp4"
+    media_path.write_bytes(b"fake")
+
     with patch.object(td, "_vendor") as mock_vendor:
-        mock_vendor._transcript_cache_path.return_value.exists.return_value = False
+        mock_vendor._transcript_cache_path.return_value = tmp_path / "media.srt"
 
         with (
             patch.object(
@@ -252,26 +284,30 @@ def test_transcribe_local_falls_back_when_garbled():
                 td, "_fallback_transcribe", return_value=_segments("fallback result")
             ) as mock_fallback,
         ):
-            result = td.transcribe_local("media.mp4", language="ar")
+            result = td.transcribe_local(str(media_path), language="ar")
 
-        mock_fallback.assert_called_once_with("media.mp4", "ar")
-        assert result == _segments("fallback result")
-        mock_vendor._write_srt_cache.assert_called_once_with("media.mp4", result)
+    mock_fallback.assert_called_once_with(str(media_path), "ar")
+    assert result == _segments("fallback result")
+    cache_path = tmp_path / "media.json"
+    assert json.loads(cache_path.read_text(encoding="utf-8")) == result
 
 
-def test_transcribe_local_keeps_darija_output_when_not_garbled():
+def test_transcribe_local_keeps_darija_output_when_not_garbled(tmp_path):
+    media_path = tmp_path / "media.mp4"
+    media_path.write_bytes(b"fake")
+    good = _segments("hello", "how are you")
+
     with patch.object(td, "_vendor") as mock_vendor:
-        mock_vendor._transcript_cache_path.return_value.exists.return_value = False
-        good = _segments("hello", "how are you")
+        mock_vendor._transcript_cache_path.return_value = tmp_path / "media.srt"
 
         with (
             patch.object(td, "_run_darija_transcription", return_value=good),
             patch.object(td, "_fallback_transcribe") as mock_fallback,
         ):
-            result = td.transcribe_local("media.mp4")
+            result = td.transcribe_local(str(media_path))
 
-        mock_fallback.assert_not_called()
-        assert result == good
+    mock_fallback.assert_not_called()
+    assert result == good
 
 
 def test_fallback_transcribe_forces_large_model_and_restores_default():

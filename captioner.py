@@ -8,14 +8,18 @@ Reads/writes no state.db tables — pure file-in, file-out transform.
 
 Style (architecture-doc deviation, deliberate — see project session notes):
 short-form "modern" caption cards, word-count-capped at two lines, with one
-keyword per line statically highlighted in yellow. The architecture doc's
-§3.4 describes per-word karaoke-sync highlighting instead; that needs
-word-level timestamps, which `darija_overrides/transcriber_darija.py`
-extracts internally but discards when it regroups them into phrase-level
-segments before handing off. Static per-card keyword emphasis was chosen
-instead so this stays a same-shape drop-in transform on the segments
-already flowing through the pipeline, with no new data plumbing back
-through the transcriber/processor.
+keyword per line statically highlighted in yellow (the highlighted word
+itself is chosen by a deterministic stopword filter, not per-word timing —
+see _highlight_word). The architecture doc's §3.4 describes per-word
+karaoke-sync highlighting instead; that's not what this does. What this
+*does* do is time each caption card to real speech: cards are built from
+segment["words"] (per-word start/end spans) when the transcript carries
+them — see darija_overrides/transcriber_darija.py's
+_group_words_into_segments — so a card appears and disappears in sync with
+the words it shows, not on a proportional guess. Segments without "words"
+(currently only the generic-Whisper fallback transcription path) fall back
+to proportional interpolation across the segment's own duration — see
+_split_into_cards.
 
 Darija/RTL: Arabic script is right-to-left and this is flagged in the
 architecture doc as a common silent-breakage point (reversed/misaligned
@@ -186,14 +190,28 @@ def _split_into_cards(segment: Dict) -> List[Dict]:
     """Split one transcript segment's words into ≤MAX_WORDS_PER_CARD-word
     caption cards, so each card fits MAX_LINES lines of WORDS_PER_LINE words.
 
-    No per-word timestamps are available (see module docstring), so each
-    card's [start, end] is interpolated by dividing the segment's own
-    duration proportionally to word count — an approximation, not exact
-    per-word timing.
+    If the segment carries real per-word timestamps (segment["words"], from
+    darija_overrides.transcriber_darija's darija-primary path), each card's
+    [start, end] is the actual span of its first/last word, so cards change
+    in sync with speech. Otherwise (segment has no "words" — currently only
+    the generic-Whisper fallback transcription path, which has no per-word
+    timestamps) a card's [start, end] is interpolated by dividing the
+    segment's own duration proportionally to word count — an approximation,
+    not real per-word timing. ponytail: fallback-only ceiling; revisit if
+    the fallback path starts firing often enough to matter.
     """
-    words = str(segment.get("text", "")).split()
+    words_meta = segment.get("words")
+    if words_meta:
+        words = [str(w["text"]).strip() for w in words_meta]
+        starts = [float(w["start"]) for w in words_meta]
+        ends = [float(w["end"]) for w in words_meta]
+    else:
+        words = str(segment.get("text", "")).split()
+        starts = ends = None
+
     if not words:
         return []
+
     seg_start, seg_end = float(segment["start"]), float(segment["end"])
     duration = seg_end - seg_start
     total = len(words)
@@ -201,13 +219,13 @@ def _split_into_cards(segment: Dict) -> List[Dict]:
     cards = []
     for i in range(0, total, MAX_WORDS_PER_CARD):
         chunk = words[i : i + MAX_WORDS_PER_CARD]
-        cards.append(
-            {
-                "start": seg_start + duration * (i / total),
-                "end": seg_start + duration * (min(i + len(chunk), total) / total),
-                "words": chunk,
-            }
-        )
+        if starts is not None:
+            card_start = starts[i]
+            card_end = ends[i + len(chunk) - 1]
+        else:
+            card_start = seg_start + duration * (i / total)
+            card_end = seg_start + duration * (min(i + len(chunk), total) / total)
+        cards.append({"start": card_start, "end": card_end, "words": chunk})
     return cards
 
 
@@ -249,11 +267,35 @@ def _card_text(words: List[str]) -> str:
     return "\\N".join(_render_line(line) for line in line_chunks)
 
 
+def _rebase_words_for_window(
+    words: List[Dict], window_start: float, window_end: float
+) -> List[Dict]:
+    """Same clip/rebase as _segments_for_window, applied to one segment's
+    per-word spans.
+    """
+    result = []
+    for w in words:
+        start = max(float(w["start"]), window_start)
+        end = min(float(w["end"]), window_end)
+        if end <= start:
+            continue
+        result.append(
+            {
+                "start": start - window_start,
+                "end": end - window_start,
+                "text": w["text"],
+            }
+        )
+    return result
+
+
 def _segments_for_window(
     segments: List[Dict], window_start: float, window_end: float
 ) -> List[Dict]:
     """Return segments overlapping [window_start, window_end], rebased so
-    window_start becomes 0 — matches the rendered clip's own timeline.
+    window_start becomes 0 — matches the rendered clip's own timeline. Each
+    segment's "words" (see _split_into_cards), if present, are clipped and
+    rebased the same way so per-word timing survives into the clip's window.
     """
     result = []
     for s in segments:
@@ -261,13 +303,17 @@ def _segments_for_window(
         end = min(float(s["end"]), window_end)
         if end <= start:
             continue
-        result.append(
-            {
-                "start": start - window_start,
-                "end": end - window_start,
-                "text": s["text"],
-            }
-        )
+        rebased = {
+            "start": start - window_start,
+            "end": end - window_start,
+            "text": s["text"],
+        }
+        words = s.get("words")
+        if words:
+            rebased_words = _rebase_words_for_window(words, window_start, window_end)
+            if rebased_words:
+                rebased["words"] = rebased_words
+        result.append(rebased)
     return result
 
 

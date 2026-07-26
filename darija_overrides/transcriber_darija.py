@@ -47,11 +47,13 @@ already used successfully), so nothing accumulates across a long video
 regardless of its length.
 """
 
+import json
 import os
 import re
 import subprocess
 import tempfile
 import wave
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import shorts_generator.local.transcriber as _vendor
@@ -310,9 +312,14 @@ def _group_words_into_segments(word_chunks: List[Dict]) -> List[Dict]:
     """Re-group word-level ASR chunks into phrase-sized segments, breaking
     at pauses > MAX_WORD_GAP_SECONDS or once a segment would run past
     MAX_SEGMENT_SECONDS.
+
+    Each segment keeps the original per-word (start, end, text) spans in a
+    "words" list alongside the joined "text" — captioner.py uses these to
+    time caption cards to actual speech instead of interpolating.
     """
     segments: List[Dict] = []
     current_words: List[str] = []
+    current_word_spans: List[Dict] = []
     current_start: Optional[float] = None
     prev_end: Optional[float] = None
 
@@ -325,7 +332,9 @@ def _group_words_into_segments(word_chunks: List[Dict]) -> List[Dict]:
             end = start
 
         if current_start is None:
-            current_start, current_words, prev_end = start, [text], end
+            current_start, current_words = start, [text]
+            current_word_spans = [{"start": start, "end": end, "text": text}]
+            prev_end = end
             continue
 
         gap = start - prev_end
@@ -336,16 +345,24 @@ def _group_words_into_segments(word_chunks: List[Dict]) -> List[Dict]:
                     "start": current_start,
                     "end": prev_end,
                     "text": " ".join(current_words),
+                    "words": current_word_spans,
                 }
             )
             current_start, current_words = start, [text]
+            current_word_spans = [{"start": start, "end": end, "text": text}]
         else:
             current_words.append(text)
+            current_word_spans.append({"start": start, "end": end, "text": text})
         prev_end = end
 
     if current_words:
         segments.append(
-            {"start": current_start, "end": prev_end, "text": " ".join(current_words)}
+            {
+                "start": current_start,
+                "end": prev_end,
+                "text": " ".join(current_words),
+                "words": current_word_spans,
+            }
         )
     return segments
 
@@ -403,19 +420,34 @@ def _fallback_transcribe(media_path: str, language: Optional[str]) -> Dict:
         _vendor.LOCAL_WHISPER_MODEL = original_model
 
 
+def _cache_path(media_path: str) -> Path:
+    """JSON cache path for the word-level transcript.
+
+    Deliberately not the vendored .srt cache format: SRT can only carry one
+    (start, end, text) span per line, which can't round-trip each segment's
+    per-word "words" timing — and nothing else in this repo reads this
+    file, so there's no compatibility reason to keep it lossy.
+    """
+    return Path(_vendor._transcript_cache_path(media_path)).with_suffix(".json")
+
+
 def transcribe_local(media_path: str, language: Optional[str] = None) -> Dict:
     """Darija-first transcription; same (media_path, language) -> {duration,
-    segments[start,end,text]} contract as the vendored transcriber.
+    segments[start,end,text,words]} contract as the vendored transcriber,
+    plus a per-segment "words" list (see _group_words_into_segments) when
+    the darija-primary path produced the result. The generic-Whisper
+    fallback path has no per-word timestamps, so its segments only carry
+    start/end/text — captioner.py handles both shapes.
 
-    Reads/writes no state.db tables. Writes the same .srt cache format as
-    shorts_generator.local.transcriber, reusing its cache helpers directly.
+    Reads/writes no state.db tables. Caches the full transcript as JSON
+    (see _cache_path for why, not the vendored .srt format).
     """
-    cache_path = _vendor._transcript_cache_path(media_path)
+    cache_path = _cache_path(media_path)
     if cache_path.exists() and cache_path.stat().st_mtime >= os.path.getmtime(
         media_path
     ):
-        cached = _vendor._load_srt_cache(cache_path)
-        if cached["segments"] and cached["duration"] > 0.0:
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        if cached.get("segments") and cached.get("duration", 0.0) > 0.0:
             print(
                 f"[transcribe/darija] reusing cached transcript: {cache_path}",
                 flush=True,
@@ -439,7 +471,7 @@ def transcribe_local(media_path: str, language: Optional[str] = None) -> Dict:
             flush=True,
         )
 
-    _vendor._write_srt_cache(media_path, transcript)
+    cache_path.write_text(json.dumps(transcript, ensure_ascii=False), encoding="utf-8")
     return transcript
 
 
