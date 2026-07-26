@@ -27,3 +27,8 @@ accelerate
 # darija_overrides/scene_snap_crop.py: architecture doc §3.5, scene-cut
 # detection to snap highlight boundaries onto clean visual edits.
 scenedetect
+
+# publisher.py: OAuth + videos.insert (architecture doc §3.9).
+google-api-python-client>=2.100.0
+google-auth-oauthlib>=1.0.0
+google-auth-httplib2>=0.2.0

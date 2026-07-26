@@ -29,6 +29,17 @@ CREATE TABLE IF NOT EXISTS clips (
     posted_video_id TEXT,
     created_at TEXT NOT NULL
 );
+
+-- Singleton row (id=1) tracking publisher.py's consecutive upload failures,
+-- so it can halt per CLAUDE.md's "log and halt, don't retry indefinitely"
+-- constraint instead of hammering the API (and burning quota) on repeated
+-- failures.
+CREATE TABLE IF NOT EXISTS publisher_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    halted INTEGER NOT NULL DEFAULT 0,
+    halted_reason TEXT
+);
 """
 
 # Columns added after the initial clips table shipped. Additive-only so a
@@ -36,6 +47,7 @@ CREATE TABLE IF NOT EXISTS clips (
 _CLIPS_MIGRATIONS = {
     "fingerprint": "TEXT",  # content hash for qc_gate.py dedup
     "qc_reason": "TEXT",  # human-readable reject/hold reason
+    "posted_at": "TEXT",  # publisher.py: when videos.insert succeeded, for daily quota accounting
 }
 
 
