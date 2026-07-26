@@ -37,6 +37,59 @@ def test_segments_for_window_clips_partial_overlap():
     assert result == [{"start": 0.0, "end": 4.0, "text": "straddles start"}]
 
 
+def test_segments_for_window_rebases_words_when_present():
+    segments = [
+        {
+            "start": 8.0,
+            "end": 12.0,
+            "text": "inside window",
+            "words": [
+                {"start": 8.0, "end": 9.0, "text": "inside"},
+                {"start": 9.0, "end": 12.0, "text": "window"},
+            ],
+        }
+    ]
+    result = captioner._segments_for_window(segments, window_start=6.0, window_end=15.0)
+    assert result == [
+        {
+            "start": 2.0,
+            "end": 6.0,
+            "text": "inside window",
+            "words": [
+                {"start": 2.0, "end": 3.0, "text": "inside"},
+                {"start": 3.0, "end": 6.0, "text": "window"},
+            ],
+        }
+    ]
+
+
+def test_segments_for_window_drops_words_outside_the_window():
+    segments = [
+        {
+            "start": 4.0,
+            "end": 10.0,
+            "text": "straddles start",
+            "words": [
+                {
+                    "start": 4.0,
+                    "end": 5.5,
+                    "text": "straddles",
+                },  # entirely before window
+                {"start": 6.0, "end": 10.0, "text": "start"},
+            ],
+        }
+    ]
+    result = captioner._segments_for_window(segments, window_start=6.0, window_end=15.0)
+    assert result == [
+        {
+            "start": 0.0,
+            "end": 4.0,
+            "text": "straddles start",
+            "words": [{"start": 0.0, "end": 4.0, "text": "start"}],
+        }
+    ]
+
+
 def test_build_ass_contains_header_and_dialogue():
     segments = [{"start": 0.0, "end": 2.0, "text": "سلام"}]
     ass = captioner.build_ass(segments, width=1080, height=1920)
@@ -82,6 +135,42 @@ def test_split_into_cards_splits_long_segment_by_word_count():
 
 def test_split_into_cards_empty_text_yields_no_cards():
     assert captioner._split_into_cards({"start": 0.0, "end": 1.0, "text": "  "}) == []
+
+
+def test_split_into_cards_uses_real_word_timestamps_when_present():
+    # Deliberately uneven word durations — proportional interpolation would
+    # NOT reproduce these boundaries, so this proves real timing is used.
+    words = [f"كلمة{i}" for i in range(7)]  # 7 words -> cards of 6 and 1
+    segment = {
+        "start": 0.0,
+        "end": 100.0,  # if interpolated, card0 would span ~0 -> ~85.7
+        "text": " ".join(words),
+        "words": [
+            {"start": float(i), "end": float(i) + 0.3, "text": w}
+            for i, w in enumerate(words)
+        ],
+    }
+    cards = captioner._split_into_cards(segment)
+    assert len(cards) == 2
+    assert cards[0]["words"] == words[:6]
+    assert cards[0]["start"] == 0.0  # first word's own start
+    assert cards[0]["end"] == 5.3  # last word (index 5) end: 5.0 + 0.3
+    assert cards[1]["words"] == words[6:]
+    assert cards[1]["start"] == 6.0
+    assert cards[1]["end"] == 6.3
+
+
+def test_split_into_cards_falls_back_to_interpolation_without_word_timestamps():
+    # Same shape as above but no "words" key (e.g. generic-Whisper fallback
+    # transcription) — must use the old proportional-interpolation timing,
+    # not crash or silently invent per-word timing.
+    words = [f"كلمة{i}" for i in range(7)]
+    segment = {"start": 0.0, "end": 7.0, "text": " ".join(words)}
+    cards = captioner._split_into_cards(segment)
+    assert cards[0]["start"] == pytest.approx(0.0)
+    assert cards[0]["end"] == pytest.approx(6.0)
+    assert cards[1]["start"] == pytest.approx(6.0)
+    assert cards[1]["end"] == pytest.approx(7.0)
 
 
 # --- highlight word selection ---
