@@ -1,5 +1,7 @@
 from unittest.mock import patch
 
+import pytest
+
 import captioner
 
 
@@ -40,13 +42,68 @@ def test_build_ass_contains_header_and_dialogue():
     ass = captioner.build_ass(segments, width=1080, height=1920)
     assert "PlayResX: 1080" in ass
     assert "PlayResY: 1920" in ass
-    assert "Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,سلام" in ass
+    assert (
+        "Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,"
+        "{\\c&H00FFFF&}سلام{\\c&HFFFFFF&}" in ass
+    )
 
 
 def test_build_ass_skips_empty_text_segments():
     segments = [{"start": 0.0, "end": 1.0, "text": "  "}]
     ass = captioner.build_ass(segments, width=1080, height=1920)
     assert "Dialogue:" not in ass
+
+
+# --- caption cards: word-count-capped splitting ---
+
+
+def test_split_into_cards_single_short_segment_is_one_card():
+    segment = {"start": 0.0, "end": 3.0, "text": "هادا نهار زوين بزاف"}
+    cards = captioner._split_into_cards(segment)
+    assert len(cards) == 1
+    assert cards[0]["words"] == ["هادا", "نهار", "زوين", "بزاف"]
+    assert cards[0]["start"] == 0.0
+    assert cards[0]["end"] == 3.0
+
+
+def test_split_into_cards_splits_long_segment_by_word_count():
+    words = [f"كلمة{i}" for i in range(9)]  # 9 words, cap is 6 -> 2 cards
+    segment = {"start": 0.0, "end": 9.0, "text": " ".join(words)}
+    cards = captioner._split_into_cards(segment)
+    assert len(cards) == 2
+    assert cards[0]["words"] == words[:6]
+    assert cards[1]["words"] == words[6:]
+    # proportional-to-word-count timing: 6/9 of the duration, then the rest
+    assert cards[0]["start"] == pytest.approx(0.0)
+    assert cards[0]["end"] == pytest.approx(6.0)
+    assert cards[1]["start"] == pytest.approx(6.0)
+    assert cards[1]["end"] == pytest.approx(9.0)
+
+
+def test_split_into_cards_empty_text_yields_no_cards():
+    assert captioner._split_into_cards({"start": 0.0, "end": 1.0, "text": "  "}) == []
+
+
+# --- highlight word selection ---
+
+
+def test_highlight_word_picks_longest_non_stopword():
+    assert captioner._highlight_word(["و", "المدرسة", "ديال"]) == "المدرسة"
+
+
+def test_highlight_word_none_when_all_stopwords():
+    assert captioner._highlight_word(["و", "ديال", "هاد"]) is None
+
+
+def test_render_line_wraps_only_the_highlight_word():
+    line = captioner._render_line(["و", "المدرسة", "كبيرة"])
+    assert line == "و {\\c&H00FFFF&}المدرسة{\\c&HFFFFFF&} كبيرة"
+
+
+def test_card_text_caps_at_two_lines():
+    words = [f"كلمة{i}" for i in range(6)]
+    text = captioner._card_text(words)
+    assert text.count("\\N") == 1  # exactly 2 lines for a full 6-word card
 
 
 def test_burn_captions_invokes_ffmpeg_with_ass_filter(tmp_path):
