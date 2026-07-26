@@ -6,13 +6,24 @@ file, and burns it into the clip via ffmpeg's libass-backed `ass` filter.
 
 Reads/writes no state.db tables — pure file-in, file-out transform.
 
-Darija/RTL note (deliberately left open per project direction): Arabic
-script is right-to-left and this is flagged in the architecture doc as a
-common silent-breakage point (reversed/misaligned text). ffmpeg here has
-libass + libharfbuzz built in, which gives it a real shot at correct
-shaping, but this module does not verify RTL rendering correctness — only
-that valid captions of some form are burned in. Revisit once real Darija
-clips are flowing.
+Style (architecture-doc deviation, deliberate — see project session notes):
+short-form "modern" caption cards, word-count-capped at two lines, with one
+keyword per line statically highlighted in yellow. The architecture doc's
+§3.4 describes per-word karaoke-sync highlighting instead; that needs
+word-level timestamps, which `darija_overrides/transcriber_darija.py`
+extracts internally but discards when it regroups them into phrase-level
+segments before handing off. Static per-card keyword emphasis was chosen
+instead so this stays a same-shape drop-in transform on the segments
+already flowing through the pipeline, with no new data plumbing back
+through the transcriber/processor.
+
+Darija/RTL: Arabic script is right-to-left and this is flagged in the
+architecture doc as a common silent-breakage point (reversed/misaligned
+text). Line breaks here are inserted at word boundaries in transcript
+(logical reading) order — libass's own fribidi-based bidi reordering
+handles the visual (right-to-left) layout, so this module never reorders
+characters itself. Verified by burning real Darija text and inspecting the
+rendered frame, not just the raw .ass text.
 """
 
 import json
@@ -21,10 +32,108 @@ import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-DEFAULT_FONT = "Arial Unicode MS"
-DEFAULT_FONT_SIZE_RATIO = 1 / 18  # fontsize = video height * this ratio
-DEFAULT_OUTLINE = 3
-DEFAULT_MARGIN_V_RATIO = 1 / 12  # bottom margin = video height * this ratio
+DEFAULT_FONT = "Al Nile"  # Apple's Arabic system font; has a real Bold face and
+# is a public font family — ".SF Arabic" looked right in `fc-list`/`fc-match`
+# but is a private CoreText-only name: ffmpeg silently substituted Times New
+# Roman for it on a real render, caught only by inspecting the burned frame.
+DEFAULT_FONT_SIZE_RATIO = 1 / 14  # fontsize = video height * this ratio
+DEFAULT_OUTLINE = 12  # BorderStyle 3: this is the box's padding, not a text outline
+DEFAULT_MARGIN_V_RATIO = 1 / 10  # bottom margin = video height * this ratio
+DEFAULT_BOX_COLOR = "&H60000000"  # semi-transparent black card background
+
+# Inline \c override tags take &Hbbggrr& (no alpha byte) — distinct from the
+# 8-hex &Haabbggrr Style-line format used above and in build_ass's header.
+HIGHLIGHT_COLOR_INLINE = "&H00FFFF&"  # yellow
+WHITE_COLOR_INLINE = "&HFFFFFF&"  # matches the style's PrimaryColour
+
+WORDS_PER_LINE = 3
+MAX_LINES = 2
+MAX_WORDS_PER_CARD = WORDS_PER_LINE * MAX_LINES
+
+# Common Darija/MSA function words — filtered out when picking each line's
+# highlight word so emphasis lands on content words, not particles/pronouns.
+STOPWORDS = {
+    "و",
+    "أو",
+    "او",
+    "ف",
+    "فـ",
+    "ثم",
+    "لكن",
+    "ولكن",
+    "في",
+    "علي",
+    "على",
+    "من",
+    "إلى",
+    "الى",
+    "عن",
+    "مع",
+    "ديال",
+    "ديالي",
+    "ديالك",
+    "ديالو",
+    "ديالها",
+    "ديالنا",
+    "ديالكم",
+    "ديالهم",
+    "بحال",
+    "هذا",
+    "هاذ",
+    "هاد",
+    "هادا",
+    "هادي",
+    "هادو",
+    "ذلك",
+    "هذه",
+    "دا",
+    "ديك",
+    "ديك",
+    "أنا",
+    "انا",
+    "نتا",
+    "نتي",
+    "نتوما",
+    "هو",
+    "هي",
+    "حنا",
+    "احنا",
+    "هوما",
+    "أنت",
+    "انت",
+    "أنتم",
+    "انتم",
+    "لي",
+    "لك",
+    "لو",
+    "لها",
+    "لنا",
+    "لكم",
+    "لهم",
+    "ما",
+    "لا",
+    "ماشي",
+    "لاباس",
+    "واخا",
+    "أما",
+    "اما",
+    "كان",
+    "كانت",
+    "غادي",
+    "راه",
+    "راها",
+    "راهم",
+    "هل",
+    "أش",
+    "اش",
+    "شنو",
+    "علاش",
+    "فين",
+    "كيفاش",
+    "شحال",
+    "امتى",
+    "إمتى",
+}
 
 
 def _probe_dimensions(video_path: str) -> Tuple[int, int]:
@@ -73,6 +182,73 @@ def _escape_ass_text(text: str) -> str:
     )
 
 
+def _split_into_cards(segment: Dict) -> List[Dict]:
+    """Split one transcript segment's words into ≤MAX_WORDS_PER_CARD-word
+    caption cards, so each card fits MAX_LINES lines of WORDS_PER_LINE words.
+
+    No per-word timestamps are available (see module docstring), so each
+    card's [start, end] is interpolated by dividing the segment's own
+    duration proportionally to word count — an approximation, not exact
+    per-word timing.
+    """
+    words = str(segment.get("text", "")).split()
+    if not words:
+        return []
+    seg_start, seg_end = float(segment["start"]), float(segment["end"])
+    duration = seg_end - seg_start
+    total = len(words)
+
+    cards = []
+    for i in range(0, total, MAX_WORDS_PER_CARD):
+        chunk = words[i : i + MAX_WORDS_PER_CARD]
+        cards.append(
+            {
+                "start": seg_start + duration * (i / total),
+                "end": seg_start + duration * (min(i + len(chunk), total) / total),
+                "words": chunk,
+            }
+        )
+    return cards
+
+
+def _highlight_word(words: List[str]) -> Optional[str]:
+    """Pick the longest non-stopword in `words` to highlight, or None if
+    every word is a stopword (e.g. a line of pure filler/particles).
+    """
+    candidates = [w for w in words if w.strip(".,!?؟،") not in STOPWORDS]
+    if not candidates:
+        return None
+    return max(candidates, key=len)
+
+
+def _render_line(words: List[str]) -> str:
+    """Render one line of a caption card, wrapping its one highlight word
+    (if any) in ASS inline color-override tags.
+    """
+    highlight = _highlight_word(words)
+    rendered = []
+    for w in words:
+        escaped = _escape_ass_text(w)
+        if w == highlight:
+            rendered.append(
+                f"{{\\c{HIGHLIGHT_COLOR_INLINE}}}{escaped}{{\\c{WHITE_COLOR_INLINE}}}"
+            )
+            highlight = None  # only the first matching occurrence gets highlighted
+        else:
+            rendered.append(escaped)
+    return " ".join(rendered)
+
+
+def _card_text(words: List[str]) -> str:
+    """Render a caption card's words as ≤MAX_LINES ASS lines (joined with
+    the literal ASS line-break token), each with its own highlight word.
+    """
+    line_chunks = [
+        words[i : i + WORDS_PER_LINE] for i in range(0, len(words), WORDS_PER_LINE)
+    ]
+    return "\\N".join(_render_line(line) for line in line_chunks)
+
+
 def _segments_for_window(
     segments: List[Dict], window_start: float, window_end: float
 ) -> List[Dict]:
@@ -115,21 +291,20 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{font},{font_size},&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,{DEFAULT_OUTLINE},0,2,40,40,{margin_v},1
+Style: Default,{font},{font_size},&H00FFFFFF,&H000000FF,&H00000000,{DEFAULT_BOX_COLOR},-1,0,0,0,100,100,0,0,3,{DEFAULT_OUTLINE},0,2,40,40,{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     lines = []
     for s in segments:
-        text = str(s.get("text", "")).strip()
-        if not text:
+        if not str(s.get("text", "")).strip():
             continue
-        start = _format_ass_timestamp(float(s["start"]))
-        end = _format_ass_timestamp(float(s["end"]))
-        lines.append(
-            f"Dialogue: 0,{start},{end},Default,,0,0,0,,{_escape_ass_text(text)}"
-        )
+        for card in _split_into_cards(s):
+            start = _format_ass_timestamp(card["start"])
+            end = _format_ass_timestamp(card["end"])
+            text = _card_text(card["words"])
+            lines.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}")
 
     return header + "\n".join(lines) + "\n"
 
