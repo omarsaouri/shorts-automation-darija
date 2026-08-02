@@ -992,13 +992,65 @@ Analytics API call, which needs a first-time OAuth consent flow (interactive
 browser step) not run yet — same manual-step gap `publisher.py`'s upload
 token had before its first real run.
 
+## Scheduler built — last net-new V0 component (2026-08-02)
+
+Built the scheduler (architecture doc §6/§10, tech stack row: `cron`/
+`launchd`, macOS native) — the last remaining net-new component per the
+"Plan of record" section above.
+
+**New: `run_ingest.py`.** The doc's §6 sequence diagram shows watcher →
+downloader → processor → QC gate running as *one chain* every time the
+scheduler wakes (every 2-4h), not four independently-scheduled jobs. This
+new script drives that chain in one invocation: `watcher.run()`, then
+`processor.process_video()` for every currently-`queued` source video, then
+`qc_gate.run_qc_gate()` — no new pipeline logic, pure orchestration of three
+already-independently-tested scripts, the way running them by hand in
+sequence would work. One video's processing failure (logged, caught) doesn't
+abort the cycle — same "one bad thing doesn't take the batch down" pattern
+as `highlights_chunk_resilience.py`. `run_qc_gate()` always runs even with
+zero newly-processed videos, since it also needs to reconsider `held` clips
+left over from a previous cycle's source-diversity/daily-cap throttling.
+
+**New: `scheduler/` — the actual cron/launchd wiring.** Three `launchd`
+plists (macOS-native, matches CLAUDE.md's environment section over `cron`):
+- `com.3larassi.ingest.plist` — `run_ingest.py` every 3h (doc says "every
+  2-4h")
+- `com.3larassi.publisher.plist` — `publisher.py` every 90 min (doc's exact
+  cadence; safe on a fixed interval only because `publisher.py`'s own
+  quota/halt logic already no-ops once the budget's spent or it's halted —
+  the scheduler adds no retry logic of its own, per CLAUDE.md's quota
+  constraint)
+- `com.3larassi.reporter.plist` — `reporter.py` once daily at 23:30 local
+
+Each plist sets `WorkingDirectory` + an explicit `PATH` (launchd's default
+PATH is minimal and doesn't include Homebrew's `/opt/homebrew/bin`, where
+`ffmpeg`/`ffprobe` live — confirmed via `which`) and separate stdout/stderr
+log files under `logs/` (new, gitignored — launchd jobs run detached with no
+terminal, so without this any failure would be silent). All three set
+`RunAtLoad: false` deliberately — loading the jobs only arms the schedule,
+it doesn't fire a real run immediately on install.
+
+`scheduler/install.sh` copies the plists into `~/Library/LaunchAgents/` and
+`launchctl load`s them; `scheduler/uninstall.sh` reverses it. Neither has
+been run — **the scheduler is built and tested but not installed/activated**.
+Deliberately not run this session: only one source channel is configured
+(`config/channels.yaml`), and activating it now would just mean unattended
+real YouTube uploads on a cron against that one test channel/video pool —
+a call for the user to make explicitly, not something to start silently.
+
+Tests in `tests/test_run_ingest.py`: every queued video gets processed and
+QC-gated, one video failing doesn't stop the others, QC gate still runs with
+zero queued videos (the held-clip-reconsideration case), a `watcher.run()`
+exception doesn't abort the cycle either. 138 tests passing total (same one
+pre-existing, unrelated `test_publisher.py` date-flake), `black`/`ruff`
+clean. `plutil -lint` confirms all three plists are valid; `bash -n`
+confirms both shell scripts parse. Not yet exercised as real launchd jobs
+(that only happens once `install.sh` actually runs).
+
 ## Next up
 
 To ship V0 per the architecture doc, in priority order:
 
-- [ ] Get more real Darija source channel IDs from user (only one channel
-      in `config/channels.yaml` so far) and re-run `watcher.py` — a scheduler
-      is pointless with one source
 - [x] Investigate the Atlas-Chat-9B highlight-scoring flakiness rate —
       chunk size / temperature sweep ruled both out as levers; mitigated by
       bumping retries 3→5 instead (see 2026-08-02 section above). Not a full
@@ -1008,8 +1060,17 @@ To ship V0 per the architecture doc, in priority order:
       2026-08-02 section above). Live Analytics API path (a day with real
       posted-clip stats) still unverified — needs a one-time OAuth consent
       flow, not run yet.
-- [ ] Scheduler — wire the full pipeline into `cron`/`launchd` (last
-      remaining net-new component for V0 per the architecture doc)
+- [x] Scheduler — `run_ingest.py` + `scheduler/*.plist` built and tested
+      (see 2026-08-02 section above). **Not yet installed/activated** —
+      `scheduler/install.sh` is ready but deliberately not run; needs more
+      than one source channel configured first, and is a real "start
+      unattended YouTube uploads" decision, not a code-complete decision.
+
+All architecture-doc V0 components now exist. What's left before flipping
+the scheduler on for real:
+
+- [ ] Get more real Darija source channel IDs from user, re-run `watcher.py`
+- [ ] Run `scheduler/install.sh` once ready to go live (manual, deliberate)
 
 Done, not yet in V0 scope but worth doing eventually:
 

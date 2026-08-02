@@ -4,6 +4,7 @@ raw/
 clips/
 reports/
 output/
+logs/
 state.db
 config/youtube_client_secret.json
 config/youtube_token.json

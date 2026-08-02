@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  End-of-day report (architecture doc §6): "End of day trigger" -> reporter.py.
+  Fires once daily at 23:30 local time. reporter.py only touches the live
+  Analytics API if at least one clip was actually posted that day.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.3larassi.reporter</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/omarsaouri/Coding/shorts-automation/.venv/bin/python3</string>
+        <string>/Users/omarsaouri/Coding/shorts-automation/reporter.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/omarsaouri/Coding/shorts-automation</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>23</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/omarsaouri/Coding/shorts-automation/logs/reporter.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/omarsaouri/Coding/shorts-automation/logs/reporter.err.log</string>
+</dict>
+</plist>
