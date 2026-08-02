@@ -113,3 +113,20 @@ def test_short_video_delegates_to_original_get_highlights():
         vendor_pipeline.get_highlights = original
 
     assert result["highlights"]
+
+
+def test_install_bumps_max_highlight_api_attempts():
+    import shorts_generator.highlights as vendor_highlights
+
+    original_attempts = vendor_highlights.MAX_HIGHLIGHT_API_ATTEMPTS
+    original_get_highlights = vendor_highlights.get_highlights
+    try:
+        hcr.install()
+        assert (
+            vendor_highlights.MAX_HIGHLIGHT_API_ATTEMPTS
+            == hcr.MAX_HIGHLIGHT_API_ATTEMPTS
+        )
+        assert hcr.MAX_HIGHLIGHT_API_ATTEMPTS > 3  # more than vendor's own default
+    finally:
+        vendor_highlights.MAX_HIGHLIGHT_API_ATTEMPTS = original_attempts
+        vendor_highlights.get_highlights = original_get_highlights

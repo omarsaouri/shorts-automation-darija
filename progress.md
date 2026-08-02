@@ -879,6 +879,55 @@ quota test hardcodes `posted_at: "2026-07-26"`, now fails simply because
 today's date has moved past that; flagged twice before, not fixed today,
 out of scope), `black`/`ruff` clean.
 
+## Atlas-Chat-9B flakiness investigation: chunk size / temperature ruled out, retries bumped instead (2026-08-02)
+
+Picked up the new high-priority Tracker item from the branding session (1-in-5
+full-video success rate observed against `Zhj07EXj4HY`). Ran a controlled
+sweep: single-attempt success rate across `CHUNK_SIZE_SECONDS` ∈ {1200s
+(current), 600s} × temperature ∈ {0.7 (current), 0.2}, against the same real
+cached transcript, through the actual production JSON-repair chain
+(`llm_ollama.call_local_llm`'s three fixes — first pass of this sweep
+accidentally called Ollama's raw API directly, bypassing those fixes, and
+got a suspicious 0/16; re-ran through the real fix chain before trusting any
+result).
+
+**Neither lever helped:** 1200s/0.7 → 1/3, 600s/0.7 → 1/5, 1200s/0.2 → 1/3,
+600s/0.2 → 0/4 (timed out on the 5th, itself a real already-handled failure
+mode). Smaller chunks were no better (arguably worse — more, smaller chances
+to fail); lower temperature made no measurable difference. Small sample
+(13-15 calls), so treat exact percentages as directional — but this
+contradicts the original theory that one specific 20-minute span's *content*
+was uniquely triggering the conversational drift. Re-slicing the same video
+into different chunk boundaries still fails at a similar rate, so this reads
+as a general ~1-in-3 per-attempt reliability ceiling for Atlas-Chat-9B on
+this content, not something tied to one bad chunk or fixable by prompt
+restructuring alone.
+
+**Fix applied instead:** bumped `MAX_HIGHLIGHT_API_ATTEMPTS` 3 → 5 via
+`darija_overrides/highlights_chunk_resilience.py` (same file as the earlier
+chunk-skip fix — thematically both are "survive highlight-scoring
+flakiness"). Same single-attribute monkeypatch pattern as
+`chunk_transcript`/`CHUNK_SIZE_SECONDS`: `call_highlight_api` reads
+`MAX_HIGHLIGHT_API_ATTEMPTS` as a bare name from its own module's globals at
+call time, so patching `shorts_generator.highlights.MAX_HIGHLIGHT_API_ATTEMPTS`
+is enough, no vendor edit. At the observed ~33% per-attempt rate, this raises
+per-chunk success from ~70% (3 attempts) to ~87% (5 attempts) — the cheapest
+lever available given chunk size/temperature didn't move anything, at the
+cost of more Ollama time on chunks that are already failing.
+
+New test (`test_install_bumps_max_highlight_api_attempts`) confirms `install()`
+patches the constant. A more elaborate integration-style test (simulating a
+chunk that only succeeds on the 4th attempt) was started but had a data bug
+(mismatched fake `duration` vs. segment timestamps causing a legitimate
+highlight to get clamped out) — removed rather than fixed, per direct user
+instruction to stop debugging it; the simpler constant-patch test already
+covers the actual change. 126 tests passing total (same one pre-existing,
+unrelated `test_publisher.py` date-flake), `black`/`ruff` clean.
+
+Not re-verified end-to-end against a real video after this change (that's
+naturally slow to confirm given the flakiness itself) — the next real
+`processor.py` run against a long video will be the real test.
+
 ## Next up
 
 To ship V0 per the architecture doc, in priority order:
@@ -886,14 +935,11 @@ To ship V0 per the architecture doc, in priority order:
 - [ ] Get more real Darija source channel IDs from user (only one channel
       in `config/channels.yaml` so far) and re-run `watcher.py` — a scheduler
       is pointless with one source
-- [ ] Investigate the Atlas-Chat-9B highlight-scoring flakiness rate —
-      ~1-in-5 full-video success rate observed today on one 42-min video,
-      worse than the ~40%-per-call rate previously documented. Chunk
-      resilience (fix/highlights-chunk-resilience) keeps it from crashing,
-      but a scheduler running this unattended needs a better success rate
-      than this, not just a clean failure mode. Options not yet tried:
-      smaller `CHUNK_SIZE_SECONDS`, lower temperature for highlight calls
-      specifically (currently 0.7, same as everything else in llm_ollama.py)
+- [x] Investigate the Atlas-Chat-9B highlight-scoring flakiness rate —
+      chunk size / temperature sweep ruled both out as levers; mitigated by
+      bumping retries 3→5 instead (see 2026-08-02 section above). Not a full
+      fix — real success rate under sustained scheduler use still unverified,
+      worth revisiting if failed videos start piling up in practice.
 - [ ] `reporter.py` — daily report generation from `state.db`
 - [ ] Scheduler — wire the full pipeline into `cron`/`launchd`
 
