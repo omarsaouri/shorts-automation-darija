@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional
 
+import yaml
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -49,6 +50,23 @@ QUOTA_COST_PER_UPLOAD = 1600
 DAILY_QUOTA_BUDGET = int(os.environ.get("YOUTUBE_DAILY_QUOTA_BUDGET", 10000))
 MAX_CONSECUTIVE_FAILURES = 3
 DEFAULT_CATEGORY_ID = "24"  # Entertainment
+CHANNEL_PROFILE_PATH = Path(
+    os.environ.get("CHANNEL_PROFILE_PATH")
+    or Path(__file__).parent / "config" / "channel_profile.yaml"
+)
+
+
+def load_channel_profile(path: Path = CHANNEL_PROFILE_PATH) -> Dict:
+    """Load branding/tags config (TRK-60/61) used to build upload metadata.
+
+    Reads no state.db tables. Missing file returns {} so upload_clip falls
+    back to a bare title + "#Shorts", same behavior as before this config
+    existed — a missing/unfilled-in channel profile is never a hard failure.
+    """
+    if not path.exists():
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
 
 
 def get_credentials(
@@ -135,19 +153,45 @@ def _record_success(conn) -> None:
     conn.commit()
 
 
-def upload_clip(youtube: Resource, clip: Dict, privacy_status: str) -> str:
+def upload_clip(
+    youtube: Resource,
+    clip: Dict,
+    privacy_status: str,
+    channel_profile: Optional[Dict] = None,
+) -> str:
     """Upload one clip via videos.insert.
 
     Inputs: youtube, an authenticated API client. clip, a clips row dict
         (needs title, clip_path). privacy_status, "public"/"unlisted"/"private".
+        channel_profile, parsed config/channel_profile.yaml (loaded via
+        load_channel_profile() if not passed) — supplies the tagline,
+        hashtags, and channel keywords appended to every upload's
+        description/tags (TRK-60/61); a missing/empty profile falls back to
+        the original bare "#Shorts" behavior.
     Outputs: the newly published YouTube video ID.
     """
+    channel_profile = (
+        channel_profile if channel_profile is not None else load_channel_profile()
+    )
     title = (clip.get("title") or "Darija Short")[:100]
+
+    hashtags = channel_profile.get("default_hashtags") or ["#Shorts"]
+    description_parts = [clip.get("title") or ""]
+    if channel_profile.get("tagline"):
+        description_parts.append(channel_profile["tagline"])
+    description_parts.append(" ".join(hashtags))
+    description = "\n\n".join(p for p in description_parts if p).strip()
+
+    tags = [h.lstrip("#") for h in hashtags] + list(
+        channel_profile.get("channel_keywords") or []
+    )
+
     body = {
         "snippet": {
             "title": title,
-            "description": f"{clip.get('title') or ''}\n\n#Shorts".strip(),
-            "categoryId": DEFAULT_CATEGORY_ID,
+            "description": description,
+            "categoryId": channel_profile.get("category_id", DEFAULT_CATEGORY_ID),
+            "tags": tags,
         },
         "status": {"privacyStatus": privacy_status},
     }
