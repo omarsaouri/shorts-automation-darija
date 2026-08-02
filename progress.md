@@ -741,34 +741,100 @@ in `reports/watcher_test_2026-07-12.md`. `state.db` has since been wiped
 and `config/channels.yaml` reset to a placeholder — watcher is untested
 against real production sources.
 
+## Long-video (≥30min) full pipeline re-test + chunk-resilience fix (2026-08-02)
+
+Picked up "Re-run the full pipeline against a video ≥30 min now that the
+chunking bug is fixed" (was blocked on this since 2026-07-23). Ran
+`processor.py Zhj07EXj4HY` (the 42-min video that originally crashed the
+machine, per the 2026-07-18 section) — first time this video has gone through
+the *full* pipeline (transcribe → highlight scoring → scene-snapped crop →
+caption burn-in), not just the transcribe-only memory test from before.
+
+**First two attempts failed on chunk 2/3** with two different JSON errors
+(`no valid highlights in response`, then `Extra data: line 8 column 6`) —
+looked at first like the usual Atlas-Chat-9B JSON flakiness already covered
+by `llm_ollama.py`'s fixes. Reproduced directly by capturing 5 raw Ollama
+responses for chunk 2's exact prompt: **all 5 came back as plain conversational
+Darija** ("سمح ليا، ما فهمتش شنو باغي تقول" — "sorry, I didn't understand what
+you're asking"), not malformed JSON. Ruled out a prompt-structure bug by
+re-testing with Ollama's `system` field properly separated from the
+transcript (`call_local_llm` currently flattens everything into one
+`/api/generate` `prompt` with no `system` field) — still 5/5 conversational.
+**Conclusion: genuine Atlas-Chat-9B capability limit on this chunk's content,
+not a parseable-JSON bug** — nothing to salvage, unlike the three previously
+fixed quirks (Arabic comma, trailing comma, mid-string truncation).
+
+Per CLAUDE.md's "ask rather than guess on Darija model choice," raised this
+with the user rather than picking a mitigation silently. Chose: make the
+pipeline resilient to a single bad chunk rather than trying to prevent the
+model from ever failing (also considered: smaller chunk size, lower
+temperature, just log-and-move-on — deferred, can revisit if this recurs
+often in production).
+
+**Fix: new `darija_overrides/highlights_chunk_resilience.py`.** Vendored
+`get_highlights`'s long-video branch calls `call_highlight_api` per chunk
+with no try/except — one chunk exhausting its 3 retries raises `RuntimeError`
+straight out of the loop and aborts highlights for the *entire* video, even
+chunks that succeeded. This patches `get_highlights`, catching a per-chunk
+`RuntimeError` and continuing with the remaining chunks; only raises if
+*every* chunk fails. **Patched at `shorts_generator.pipeline.get_highlights`,
+not `shorts_generator.highlights.get_highlights`** — pipeline.py does
+`from .highlights import get_highlights` at module import time (an
+early-bound reference), so patching the source module's attribute (the trick
+that works for `chunk_transcript`, referenced by bare name *within* that same
+module) wouldn't be seen by pipeline.py's already-bound name. This is a new
+wrinkle in the override pattern worth remembering for any future
+`get_highlights`-adjacent patch. Wired into `processor.py`'s
+`install_overrides()`.
+
+4 new tests in `tests/test_highlights_chunk_resilience.py`: one bad chunk
+skipped while others still contribute, all-chunks-failing still raises,
+`install()` patches the correct module (and confirms it does *not* touch
+`shorts_generator.highlights.get_highlights`), short-video path (<30min)
+delegates untouched to vendor's original `get_highlights`. 122 tests passing
+total (one pre-existing, unrelated failure in `test_publisher.py` — hardcodes
+`posted_at: "2026-07-26"` to test same-day quota logic, now fails simply
+because today's date has moved past that; not touched by this fix),
+`black`/`ruff` clean.
+
+**Re-ran end-to-end with the fix installed — succeeded.** Chunk 2/3 failed
+again (same content, same underlying model limit) and was cleanly skipped;
+chunks 1 and 3 produced 2 real clips
+(`output/Zhj07EXj4HY/short_0{1,2}.captioned.mp4`), `state.db` shows
+`source_videos.status = 'captioned'` and both `clips` rows at
+`status = 'pending_qc'`. Closes the "re-run against ≥30min video" item.
+
+**Also visually re-confirmed Arabic/RTL caption rendering** on a real Darija
+frame from this run (`short_01.captioned.mp4`) — right-to-left, correctly
+shaped/joined script, yellow per-line keyword highlight rendering as
+designed. First RTL check against real Darija content through the *current*
+caption style (the modern-highlight/word-sync rework happened after the last
+RTL check, which was also on English test audio only). Closes the long-open
+"visually verify RTL rendering" item.
+
+Committed on `fix/highlights-chunk-resilience`, branched off `main`. Not yet
+merged.
+
 ## Next up
 
-- [ ] Re-run the *full* pipeline against a video ≥30 min now that the
-      chunking bug is fixed (previously blocked on this)
-- [ ] `publisher.py` — quota accounting (1,600 units/upload, 10,000/day
-      budget) + retry/halt behavior; consumes `clips` rows at
-      `status = 'queued'` (written by `qc_gate.py`)
-- [ ] Full RTL correctness pass on `captioner.py` — one real captioned
-      frame (`output/short_01.captioned.mp4`) looked correctly shaped and
-      right-aligned, which is promising, but that's one frame, not a real
-      verification pass
-- [ ] Review the re-run output in `clips/KazZdpoVvio/` (3 captioned clips)
-      — confirm captions are now readable phrase-sized cues, not walls of
-      text, and that the face-tracking fix visibly holds up over the full
-      40 minutes, not just the one window it was verified against
-- [ ] **Visually verify `captioner.py`'s Arabic/RTL rendering** on this
-      real Darija text — now have real transcript segments to check
-      against, no longer just the English-only smoke test (open item,
-      deliberately deferred until now)
+To ship V0 per the architecture doc, in priority order:
+
 - [ ] Get more real Darija source channel IDs from user (only one channel
-      in `config/channels.yaml` so far) and re-run `watcher.py`
+      in `config/channels.yaml` so far) and re-run `watcher.py` — a scheduler
+      is pointless with one source
+- [ ] `reporter.py` — daily report generation from `state.db`
+- [ ] Scheduler — wire the full pipeline into `cron`/`launchd`
+
+Done, not yet in V0 scope but worth doing eventually:
+
 - [ ] Extend `highlights.py`'s system prompt with Darija/code-switch
       few-shot examples (still using the vendored file's default English
       framing today)
-- [ ] `reporter.py`, scheduler
+- [ ] Face-tracking crop smoothing beyond the debounce fix
+- [ ] Video editing polish (saturation, overlay/watermark, YouTube tags),
+      channel branding decision — cosmetic, not correctness
 
 ## Open questions
 
-- Darija/RTL caption rendering correctness — not yet visually verified,
-  deliberately deferred per user direction (2026-07-13). Revisit once real
-  Darija source content is available to test against.
+- (Resolved 2026-08-02) Darija/RTL caption rendering correctness — visually
+  confirmed correct on real Darija content, see the 2026-08-02 section above.
