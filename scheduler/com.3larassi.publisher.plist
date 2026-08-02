@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Publish loop (architecture doc §6): "Publish next queued clip", spread
+  across the day ~every 90 min. publisher.py's own quota/halt logic (see
+  publisher.py's module docstring) is what keeps this safe to run on a
+  fixed interval — it no-ops once halted or once the daily quota budget is
+  spent, never loops/retries on its own.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.3larassi.publisher</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/omarsaouri/Coding/shorts-automation/.venv/bin/python3</string>
+        <string>/Users/omarsaouri/Coding/shorts-automation/publisher.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/omarsaouri/Coding/shorts-automation</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>StartInterval</key>
+    <integer>5400</integer>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/omarsaouri/Coding/shorts-automation/logs/publisher.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/omarsaouri/Coding/shorts-automation/logs/publisher.err.log</string>
+</dict>
+</plist>

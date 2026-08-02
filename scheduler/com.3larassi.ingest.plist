@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Ingest cycle (architecture doc §6): watcher -> processor -> QC gate,
+  run_ingest.py. "Run every 2-4h" per the doc — 3h picked as the midpoint.
+  RunAtLoad is false on purpose: loading this job only arms the schedule,
+  it doesn't fire a real run immediately (test the pipeline manually first).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.3larassi.ingest</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/omarsaouri/Coding/shorts-automation/.venv/bin/python3</string>
+        <string>/Users/omarsaouri/Coding/shorts-automation/run_ingest.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/omarsaouri/Coding/shorts-automation</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>StartInterval</key>
+    <integer>10800</integer>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/omarsaouri/Coding/shorts-automation/logs/ingest.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/omarsaouri/Coding/shorts-automation/logs/ingest.err.log</string>
+</dict>
+</plist>
