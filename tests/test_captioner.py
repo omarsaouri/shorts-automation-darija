@@ -195,7 +195,7 @@ def test_card_text_caps_at_two_lines():
     assert text.count("\\N") == 1  # exactly 2 lines for a full 6-word card
 
 
-def test_burn_captions_invokes_ffmpeg_with_ass_filter(tmp_path):
+def test_burn_captions_without_logo_uses_vf_chain_with_border_and_ass(tmp_path):
     clip = tmp_path / "clip.mp4"
     clip.write_bytes(b"fake")
 
@@ -204,12 +204,68 @@ def test_burn_captions_invokes_ffmpeg_with_ass_filter(tmp_path):
         patch("captioner.subprocess.run") as mock_run,
     ):
         out = captioner.burn_captions(
-            str(clip), [{"start": 0.0, "end": 1.0, "text": "hi"}], 0.0, 1.0
+            str(clip),
+            [{"start": 0.0, "end": 1.0, "text": "hi"}],
+            0.0,
+            1.0,
+            logo_path=None,
         )
 
     mock_run.assert_called_once()
     cmd = mock_run.call_args[0][0]
     assert cmd[0] == "ffmpeg"
+    assert "-filter_complex" not in cmd
     vf_index = cmd.index("-vf")
-    assert cmd[vf_index + 1].startswith("ass=")
+    vf = cmd[vf_index + 1]
+    assert "drawbox=" in vf
+    assert ",ass=" in vf
     assert out == str(clip.with_name("clip.captioned.mp4"))
+
+
+def test_burn_captions_with_logo_uses_filter_complex_overlay(tmp_path):
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake")
+    logo = tmp_path / "logo.png"
+    logo.write_bytes(b"fake-png")
+
+    with (
+        patch.object(captioner, "_probe_dimensions", return_value=(1080, 1920)),
+        patch("captioner.subprocess.run") as mock_run,
+    ):
+        captioner.burn_captions(
+            str(clip),
+            [{"start": 0.0, "end": 1.0, "text": "hi"}],
+            0.0,
+            1.0,
+            logo_path=logo,
+        )
+
+    cmd = mock_run.call_args[0][0]
+    assert "-i" in cmd and str(logo) in cmd
+    fc_index = cmd.index("-filter_complex")
+    filter_complex = cmd[fc_index + 1]
+    assert "drawbox=" in filter_complex
+    assert "overlay=" in filter_complex
+    assert "ass=" in filter_complex
+    assert cmd[cmd.index("-map") + 1] == "[vout]"
+
+
+def test_burn_captions_missing_logo_file_falls_back_to_border_only(tmp_path):
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake")
+
+    with (
+        patch.object(captioner, "_probe_dimensions", return_value=(1080, 1920)),
+        patch("captioner.subprocess.run") as mock_run,
+    ):
+        captioner.burn_captions(
+            str(clip),
+            [{"start": 0.0, "end": 1.0, "text": "hi"}],
+            0.0,
+            1.0,
+            logo_path=tmp_path / "does_not_exist.png",
+        )
+
+    cmd = mock_run.call_args[0][0]
+    assert "-filter_complex" not in cmd
+    assert "-vf" in cmd

@@ -45,6 +45,16 @@ DEFAULT_OUTLINE = 12  # BorderStyle 3: this is the box's padding, not a text out
 DEFAULT_MARGIN_V_RATIO = 1 / 10  # bottom margin = video height * this ratio
 DEFAULT_BOX_COLOR = "&H60000000"  # semi-transparent black card background
 
+# Brand overlay (TRK-60/61): "3la Rassi" logo pill + accent border, burned in
+# alongside captions in the same ffmpeg call. Assets + their generator live
+# in assets/brand/ (generate.py — one-off design script, not part of the
+# pipeline, only needed again if the branding changes).
+BRAND_LOGO_PATH = Path(__file__).parent / "assets" / "brand" / "overlay_ribbon.png"
+BRAND_BORDER_COLOR = "0xFF6B35"  # brand orange
+BRAND_BORDER_THICKNESS_RATIO = 1 / 180  # of video height
+BRAND_LOGO_WIDTH_RATIO = 0.42  # of video width
+BRAND_LOGO_MARGIN_RATIO = 0.04  # of video width, from the top-left corner
+
 # Inline \c override tags take &Hbbggrr& (no alpha byte) — distinct from the
 # 8-hex &Haabbggrr Style-line format used above and in build_ass's header.
 HIGHLIGHT_COLOR_INLINE = "&H00FFFF&"  # yellow
@@ -362,10 +372,15 @@ def burn_captions(
     window_end: float,
     out_path: Optional[str] = None,
     font: str = DEFAULT_FONT,
+    logo_path: Optional[Path] = BRAND_LOGO_PATH,
 ) -> str:
     """Burn captions for [window_start, window_end] of the source transcript
     into `clip_path` (already cropped to its final window, so its own
-    timeline starts at 0). Returns the captioned clip's path.
+    timeline starts at 0). Also burns in the brand accent border and, if
+    `logo_path` exists, the logo pill overlay (top-left) — same ffmpeg call
+    as the caption burn, so the clip is only re-encoded once. Pass
+    `logo_path=None` to skip the logo (border still burns in). Returns the
+    captioned clip's path.
     """
     width, height = _probe_dimensions(clip_path)
     clip_segments = _segments_for_window(segments, window_start, window_end)
@@ -381,29 +396,41 @@ def burn_captions(
         f.write(ass_content)
         ass_path = f.name
 
-    try:
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-loglevel",
-                "error",
-                "-i",
-                clip_path,
-                "-vf",
-                f"ass={ass_path}",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "fast",
-                "-crf",
-                "20",
-                "-c:a",
-                "copy",
-                out_path,
-            ],
-            check=True,
+    border_t = max(2, round(height * BRAND_BORDER_THICKNESS_RATIO))
+    have_logo = logo_path is not None and Path(logo_path).exists()
+
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", clip_path]
+    if have_logo:
+        logo_w = max(1, round(width * BRAND_LOGO_WIDTH_RATIO))
+        margin = max(1, round(width * BRAND_LOGO_MARGIN_RATIO))
+        cmd += ["-i", str(logo_path)]
+        filter_complex = (
+            f"[0:v]drawbox=x=0:y=0:w=iw:h=ih:t={border_t}:color={BRAND_BORDER_COLOR}@1.0[framed];"
+            f"[1:v]scale={logo_w}:-1[logo];"
+            f"[framed][logo]overlay=x={margin}:y={margin}[branded];"
+            f"[branded]ass={ass_path}[vout]"
         )
+        cmd += ["-filter_complex", filter_complex, "-map", "[vout]", "-map", "0:a"]
+    else:
+        cmd += [
+            "-vf",
+            f"drawbox=x=0:y=0:w=iw:h=ih:t={border_t}:color={BRAND_BORDER_COLOR}@1.0,ass={ass_path}",
+        ]
+
+    cmd += [
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "20",
+        "-c:a",
+        "copy",
+        out_path,
+    ]
+
+    try:
+        subprocess.run(cmd, check=True)
     finally:
         Path(ass_path).unlink(missing_ok=True)
 

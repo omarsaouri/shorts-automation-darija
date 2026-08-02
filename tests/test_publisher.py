@@ -182,3 +182,48 @@ def test_publish_next_resets_failure_counter_on_success():
         "SELECT consecutive_failures FROM publisher_state WHERE id = 1"
     ).fetchone()
     assert failures == 0
+
+
+# --- channel branding (TRK-60/61) ---
+
+
+def test_upload_clip_uses_channel_profile_tagline_hashtags_and_tags():
+    youtube = _mock_youtube()
+    clip = {"title": "Clip Title", "clip_path": "/clips/v1/short_01.captioned.mp4"}
+    profile = {
+        "tagline": "Darija commentary & reactions, clipped.",
+        "default_hashtags": ["#Shorts", "#Darija", "#Maroc"],
+        "channel_keywords": ["darija", "maroc"],
+        "category_id": "24",
+    }
+
+    publisher.upload_clip(youtube, clip, "public", channel_profile=profile)
+
+    body = youtube.videos.return_value.insert.call_args.kwargs["body"]
+    assert body["snippet"]["title"] == "Clip Title"
+    assert "Darija commentary & reactions, clipped." in body["snippet"]["description"]
+    assert "#Shorts #Darija #Maroc" in body["snippet"]["description"]
+    assert body["snippet"]["tags"] == ["Shorts", "Darija", "Maroc", "darija", "maroc"]
+    assert body["snippet"]["categoryId"] == "24"
+
+
+def test_upload_clip_falls_back_to_bare_shorts_tag_when_profile_empty():
+    youtube = _mock_youtube()
+    clip = {"title": "Clip Title", "clip_path": "/clips/v1/short_01.captioned.mp4"}
+
+    publisher.upload_clip(youtube, clip, "public", channel_profile={})
+
+    body = youtube.videos.return_value.insert.call_args.kwargs["body"]
+    assert body["snippet"]["description"] == "Clip Title\n\n#Shorts"
+    assert body["snippet"]["tags"] == ["Shorts"]
+    assert body["snippet"]["categoryId"] == publisher.DEFAULT_CATEGORY_ID
+
+
+def test_load_channel_profile_missing_file_returns_empty_dict(tmp_path):
+    assert publisher.load_channel_profile(tmp_path / "does_not_exist.yaml") == {}
+
+
+def test_load_channel_profile_reads_real_config():
+    profile = publisher.load_channel_profile()
+    assert profile["name"] == "3la Rassi"
+    assert "#Shorts" in profile["default_hashtags"]

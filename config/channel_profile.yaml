@@ -1,0 +1,49 @@
+# Channel identity + branding for the "3la Rassi" channel (TRK-60/61).
+#
+# This is the same channel already authorized in config/youtube_token.json
+# (the one that posted the earlier test clip) — rebranded in YouTube Studio,
+# not a new channel. publisher.py's videos.insert always uploads to whatever
+# channel that OAuth token grants, implicitly — there's no separate
+# channel-ID parameter to wire up anywhere in this pipeline.
+#
+# publisher.py reads name/tags/description from here — this is the single
+# source of truth so branding text lives in one place, not scattered across
+# scripts.
+
+name: "3la Rassi"
+handle: "@3larassi"
+tagline: "Darija commentary & reactions, clipped."
+
+# YouTube Studio -> Customization -> Basic info -> Description.
+about: >
+  3la Rassi — chwiya mn koulchi f Darija: commentary, reactions, w chi hyat
+  mn video. Content jdid kol simana.
+
+category_id: "24"  # Entertainment — matches DEFAULT_CATEGORY_ID in publisher.py
+
+# Appended to every clip's description as a consistent signature + reach.
+default_hashtags:
+  - "#Shorts"
+  - "#Darija"
+  - "#Maroc"
+  - "#3laRassi"
+
+# Suggested channel keywords (YouTube Studio -> Customization -> Basic info
+# -> Keywords) — not per-video tags, those come from default_hashtags above.
+channel_keywords:
+  - "darija"
+  - "maroc"
+  - "moroccan"
+  - "commentary"
+  - "reactions"
+  - "shorts"
+
+branding:
+  icon: assets/brand/icon.png              # square, use as channel profile picture
+  banner: assets/brand/banner_2560x1440.png # channel art
+  wordmark: assets/brand/wordmark.png       # logo + name lockup, for thumbnails/About
+  overlay_logo: assets/brand/overlay_ribbon.png  # burned into every clip, see captioner.py
+  colors:
+    orange: "#FF6B35"
+    purple: "#2D1B4E"
+    cream: "#F7F3E9"

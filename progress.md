@@ -815,6 +815,70 @@ RTL check, which was also on English test audio only). Closes the long-open
 Committed on `fix/highlights-chunk-resilience`, branched off `main`. Not yet
 merged.
 
+## Channel branding: "3la Rassi" identity + overlay burn-in + tags (2026-08-02)
+
+User reprioritized: branding/overlay/channel identity before `reporter.py` +
+scheduler, since unbranded clips aren't really shippable content yet. Went
+through a design pass together (not guessed silently, per CLAUDE.md — this
+touches product identity, not just code):
+
+- **Name/identity: "3la Rassi"** (على راسي — colloquial Darija for
+  "trust me" / "for sure"), chosen over two other concepts ("Wach Clips",
+  "Darija Dose"). Niche: general Darija commentary/reactions, not
+  sports-only (broader than the test channel used so far).
+- **Palette:** sunset orange `#FF6B35` + deep purple `#2D1B4E` + cream
+  `#F7F3E9`. **Logo v1** (starburst badge + literal head silhouette) was
+  rejected as dated on user review; **v2** (flat diagonal-gradient squircle +
+  bold "3" monogram, Avenir Next Heavy) was approved. Assets + their
+  generator live in `assets/brand/` (`generate.py` — one-off Pillow script,
+  not part of the runtime pipeline; Pillow added to `requirements.txt` for
+  that reason only).
+- **Channel target confirmed:** this is the *same* channel already
+  authorized in `config/youtube_token.json` (the one that posted the
+  earlier test clip `ffEbx3lEPJk`) — user rebranded it in YouTube Studio
+  rather than creating a new one. No publisher.py changes needed for this:
+  `videos.insert` always uploads to whichever channel the OAuth token
+  grants, implicitly, there's no separate channel-ID parameter anywhere in
+  this pipeline. `config/channel_profile.yaml` (new) is the single source of
+  truth for name/tagline/hashtags/keywords — `publisher.py` reads it in
+  `upload_clip` (new `channel_profile` param, defaults to loading the file)
+  to build description/tags; a missing/empty profile falls back to the
+  original bare `"#Shorts"` behavior, so this was never a hard dependency.
+
+**`captioner.py`:** `burn_captions` now burns the brand border (ffmpeg
+`drawbox`) and, if `assets/brand/overlay_ribbon.png` exists, the logo pill
+(ffmpeg `overlay`) in the *same* ffmpeg call as the caption `ass` filter —
+one re-encode, not three. `logo_path` param defaults to the brand asset,
+pass `None` to skip (border still burns in either way).
+
+Real end-to-end verification: burned a real frame and visually confirmed
+border + logo pill + Arabic captions all render together correctly. Then
+ran the *full* `processor.py Zhj07EXj4HY` pipeline twice more to get a real
+branded, correctly-captioned output (first of these two attempts failed
+outright — see below) — final result: 3 real clips, `.captioned.mp4` files
+all show the border/logo/captions together correctly (frame-checked).
+
+**Also surfaced: Atlas-Chat-9B flakiness on this video is worse than
+previously measured.** Across 5 real `processor.py Zhj07EXj4HY` runs total
+today (2 before the branding work, 3 during it), only 2 fully or partially
+succeeded — one run failed **all 3 of 3 chunks** (previously only ever saw
+1 chunk fail at a time). The chunk-resilience fix (previous section) is
+doing its job — no hard crash, clean `RuntimeError` with a clear message,
+`source_videos.status` correctly lands on `'failed'` — but a ~1-in-5 total
+video success rate is a real production concern once the scheduler is
+running unattended. Not investigated further today (out of scope for the
+branding work) — worth picking up before or alongside the scheduler ticket
+so failed videos don't silently pile up. Logged as a new Tracker item.
+
+4 new tests in `tests/test_captioner.py` (border-only path, logo+overlay
+path via `-filter_complex`, missing-logo-file fallback), 4 new tests in
+`tests/test_publisher.py` (tagline/hashtags/tags wiring, empty-profile
+fallback, missing-file config load, real-config load). 132 tests passing
+total (1 pre-existing, unrelated failure — `test_publisher.py`'s same-day
+quota test hardcodes `posted_at: "2026-07-26"`, now fails simply because
+today's date has moved past that; flagged twice before, not fixed today,
+out of scope), `black`/`ruff` clean.
+
 ## Next up
 
 To ship V0 per the architecture doc, in priority order:
@@ -822,6 +886,14 @@ To ship V0 per the architecture doc, in priority order:
 - [ ] Get more real Darija source channel IDs from user (only one channel
       in `config/channels.yaml` so far) and re-run `watcher.py` — a scheduler
       is pointless with one source
+- [ ] Investigate the Atlas-Chat-9B highlight-scoring flakiness rate —
+      ~1-in-5 full-video success rate observed today on one 42-min video,
+      worse than the ~40%-per-call rate previously documented. Chunk
+      resilience (fix/highlights-chunk-resilience) keeps it from crashing,
+      but a scheduler running this unattended needs a better success rate
+      than this, not just a clean failure mode. Options not yet tried:
+      smaller `CHUNK_SIZE_SECONDS`, lower temperature for highlight calls
+      specifically (currently 0.7, same as everything else in llm_ollama.py)
 - [ ] `reporter.py` — daily report generation from `state.db`
 - [ ] Scheduler — wire the full pipeline into `cron`/`launchd`
 
@@ -830,9 +902,11 @@ Done, not yet in V0 scope but worth doing eventually:
 - [ ] Extend `highlights.py`'s system prompt with Darija/code-switch
       few-shot examples (still using the vendored file's default English
       framing today)
-- [ ] Face-tracking crop smoothing beyond the debounce fix
-- [ ] Video editing polish (saturation, overlay/watermark, YouTube tags),
-      channel branding decision — cosmetic, not correctness
+- [ ] Face-tracking crop smoothing beyond the debounce fix — reconfirmed
+      with real footage 2026-08-02, still visible jiggle
+- [ ] Video editing polish (saturation, YouTube description/tags beyond the
+      defaults in `config/channel_profile.yaml`) — logo/overlay/branding
+      itself shipped 2026-08-02, this is further polish on top
 
 ## Open questions
 
