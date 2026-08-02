@@ -40,6 +40,18 @@ CREATE TABLE IF NOT EXISTS publisher_state (
     halted INTEGER NOT NULL DEFAULT 0,
     halted_reason TEXT
 );
+
+-- reporter.py (architecture doc §3.10/§7): one row per clip per day its
+-- YouTube Analytics stats were fetched. PRIMARY KEY on (date, clip_id) so
+-- re-running the reporter on the same day is idempotent, not duplicating.
+CREATE TABLE IF NOT EXISTS daily_stats (
+    date TEXT NOT NULL,
+    clip_id TEXT NOT NULL REFERENCES clips(clip_id),
+    views INTEGER NOT NULL DEFAULT 0,
+    likes INTEGER NOT NULL DEFAULT 0,
+    retention REAL,
+    PRIMARY KEY (date, clip_id)
+);
 """
 
 # Columns added after the initial clips table shipped. Additive-only so a
@@ -48,6 +60,7 @@ _CLIPS_MIGRATIONS = {
     "fingerprint": "TEXT",  # content hash for qc_gate.py dedup
     "qc_reason": "TEXT",  # human-readable reject/hold reason
     "posted_at": "TEXT",  # publisher.py: when videos.insert succeeded, for daily quota accounting
+    "qc_checked_at": "TEXT",  # qc_gate.py: when a clip last transitioned status, for reporter.py's daily QC-rejections scoping
 }
 
 

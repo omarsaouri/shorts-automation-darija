@@ -928,6 +928,70 @@ Not re-verified end-to-end against a real video after this change (that's
 naturally slow to confirm given the flakiness itself) — the next real
 `processor.py` run against a long video will be the real test.
 
+## reporter.py built (2026-08-02)
+
+Built the next architecture-doc component (§3.10): `reporter.py` — runs at
+end of day, pulls per-clip stats via the YouTube Analytics API for clips
+posted that day, records them, and compiles `reports/{date}.md` (clips
+posted w/ views/likes/retention, source videos, QC rejections and why, quota
+used/remaining), per the doc's spec and CLAUDE.md's testing requirements for
+this stage.
+
+**`db.py`:** new `daily_stats` table (architecture doc §7's `DAILY_STATS`
+entity — `date`, `clip_id` FK, `views`, `likes`, `retention`), `PRIMARY KEY
+(date, clip_id)` so re-running the reporter same-day is idempotent (upsert,
+not duplicate rows). New `qc_checked_at` column on `clips` (additive
+migration, same pattern as `fingerprint`/`qc_reason`/`posted_at`) — needed
+because nothing previously timestamped *when* a clip was QC-rejected, only
+`created_at` (when `processor.py` made it), which would've made "QC
+rejections today" impossible to scope correctly.
+
+**`qc_gate.py`:** `_transition` (the single function every status change
+already routes through) now stamps `qc_checked_at` on every transition —
+one-line change, no new call sites needed since it's already centralized.
+
+**`reporter.py` design:**
+- Separate OAuth scope/token from `publisher.py`: Analytics API needs
+  `yt-analytics.readonly`, distinct from `youtube.upload` — a token minted
+  for one scope can't be silently reused for another, so
+  `config/youtube_analytics_token.json` is its own file (added to
+  `.gitignore` alongside the existing `youtube_token.json` entry, same
+  reasoning as CLAUDE.md's "never commit secrets" — added now even though
+  no live OAuth flow has been run yet to create it).
+- Reuses `publisher.QUOTA_COST_PER_UPLOAD`/`DAILY_QUOTA_BUDGET` directly
+  rather than re-deriving quota math — one source of truth for what an
+  upload costs.
+- `run_daily_report` only builds/calls the Analytics client if at least one
+  clip was posted that day — a quiet day (like the real one this was tested
+  against) never needs live API access at all, matching the project's
+  "don't call external services unnecessarily" spirit.
+- `generate_report_markdown` is pure (reads `state.db`, returns a string) —
+  separated from `write_report` (file I/O) so the CLAUDE.md-required
+  "checked against an expected markdown fixture" test doesn't need any
+  filesystem interaction.
+
+Tests in `tests/test_reporter.py`: `fetch_clip_stats` (parses a real-shaped
+Analytics response row, and the no-data-yet case → zeros, not an error),
+`record_daily_stats` upsert-on-rerun, `fetch_stats_for_posted_clips` only
+touches clips posted on the given day, `generate_report_markdown` against a
+seeded snapshot compared to `tests/fixtures/report_2026-08-02.md` (per
+CLAUDE.md's explicit spec for this stage) plus an empty-day case,
+`write_report`'s file-naming, and `run_daily_report`'s
+skip-the-API-when-nothing-posted / fetch-when-something-posted branches. All
+YouTube API calls mocked, never hits the real API. 134 tests passing total
+(same one pre-existing, unrelated `test_publisher.py` date-flake),
+`black`/`ruff` clean.
+
+**Real smoke test:** ran `python3 reporter.py` for real against the actual
+`state.db` — correctly detected no clips posted today, skipped building an
+Analytics client entirely (no live API/OAuth interaction), wrote a real
+`reports/2026-08-02.md` (gitignored, not committed). **Not yet verified
+against a day that actually has posted clips** — that needs the one real
+posted clip's data (`BInzNuetHkY_02`, posted 2026-07-26) fetched via a real
+Analytics API call, which needs a first-time OAuth consent flow (interactive
+browser step) not run yet — same manual-step gap `publisher.py`'s upload
+token had before its first real run.
+
 ## Next up
 
 To ship V0 per the architecture doc, in priority order:
@@ -940,8 +1004,12 @@ To ship V0 per the architecture doc, in priority order:
       bumping retries 3→5 instead (see 2026-08-02 section above). Not a full
       fix — real success rate under sustained scheduler use still unverified,
       worth revisiting if failed videos start piling up in practice.
-- [ ] `reporter.py` — daily report generation from `state.db`
-- [ ] Scheduler — wire the full pipeline into `cron`/`launchd`
+- [x] `reporter.py` — daily report generation from `state.db` (see
+      2026-08-02 section above). Live Analytics API path (a day with real
+      posted-clip stats) still unverified — needs a one-time OAuth consent
+      flow, not run yet.
+- [ ] Scheduler — wire the full pipeline into `cron`/`launchd` (last
+      remaining net-new component for V0 per the architecture doc)
 
 Done, not yet in V0 scope but worth doing eventually:
 
