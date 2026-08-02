@@ -8,13 +8,14 @@ then go through a source-diversity throttle and a daily-clip cap, both of
 which prefer higher-scoring clips. No bypass flag exists anywhere in this
 file, per CLAUDE.md's non-negotiable QC gate constraint.
 
-Reads/writes state.db: `clips` (status + qc_reason transitions only).
+Reads/writes state.db: `clips` (status + qc_reason + qc_checked_at transitions only).
 """
 
 import argparse
 import json
 import logging
 import subprocess
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 from db import get_connection
@@ -109,10 +110,14 @@ def _find_duplicate(conn, fingerprint: Optional[str]) -> Optional[str]:
 
 
 def _transition(conn, clip_id: str, status: str, reason: str) -> None:
+    """Update a clip's status + qc_reason, stamping qc_checked_at (UTC ISO)
+    so reporter.py can scope "QC rejections today" to a real timestamp
+    instead of guessing from created_at.
+    """
     logger.info("clip %s -> %s (%s)", clip_id, status, reason)
     conn.execute(
-        "UPDATE clips SET status = ?, qc_reason = ? WHERE clip_id = ?",
-        (status, reason, clip_id),
+        "UPDATE clips SET status = ?, qc_reason = ?, qc_checked_at = ? WHERE clip_id = ?",
+        (status, reason, datetime.now(timezone.utc).isoformat(), clip_id),
     )
 
 
