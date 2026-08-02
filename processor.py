@@ -32,6 +32,7 @@ import captioner  # noqa: E402
 from db import get_connection  # noqa: E402
 from darija_overrides import (  # noqa: E402
     clipper_stable,
+    highlights_chunk_resilience,
     highlights_chunking,
     highlights_duration_filter,
     llm_ollama,
@@ -52,6 +53,7 @@ def install_overrides() -> None:
     clipper_stable.install()
     highlights_chunking.install()
     highlights_duration_filter.install()
+    highlights_chunk_resilience.install()
     scene_snap_crop.install()
 
 
