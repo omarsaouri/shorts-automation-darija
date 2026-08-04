@@ -3,12 +3,11 @@ pytest==9.1.1
 black==26.5.1
 ruff==0.15.21
 
-# vendor/ai-youtube-shorts-generator local-mode deps (--mode local only; we
-# never use its api mode / MuAPI). local/llm.py's OpenAI/Gemini call is
-# overridden with Ollama (darija_overrides/llm_ollama.py) and
-# local/transcriber.py's faster-whisper is overridden with a Darija
-# fine-tune (darija_overrides/transcriber_darija.py) — faster-whisper stays
-# a dependency too, since the transcriber override falls back to it.
+# vendor/ai-youtube-shorts-generator local-mode deps (the only mode — the
+# paid MuAPI code path was deleted outright). local/llm.py calls Ollama
+# directly (no OpenAI/Gemini) and local/transcriber.py is Darija-primary,
+# faster-whisper as fallback only — faster-whisper stays a dependency for
+# that fallback path.
 yt-dlp>=2024.1.1
 faster-whisper>=1.0.0
 # Pinned <5: opencv-python 5.0.0.93 ships without cv2.CascadeClassifier on
@@ -16,16 +15,16 @@ faster-whisper>=1.0.0
 # tracking. 4.x has the full objdetect bindings.
 opencv-python<5
 
-# darija_overrides/transcriber_darija.py deps: anaszil/whisper-large-v3-turbo-darija
-# is a LoRA adapter (no CTranslate2/GGUF conversion exists), so it loads via
+# local/transcriber.py deps: anaszil/whisper-large-v3-turbo-darija is a
+# LoRA adapter (no CTranslate2/GGUF conversion exists), so it loads via
 # plain transformers + PEFT instead of faster-whisper.
 torch
 transformers
 peft
 accelerate
 
-# darija_overrides/scene_snap_crop.py: architecture doc §3.5, scene-cut
-# detection to snap highlight boundaries onto clean visual edits.
+# local/clipper.py: architecture doc §3.5, scene-cut detection to snap
+# highlight boundaries onto clean visual edits.
 scenedetect
 
 # publisher.py: OAuth + videos.insert (architecture doc §3.9).

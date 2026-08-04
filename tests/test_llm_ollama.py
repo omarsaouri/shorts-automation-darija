@@ -1,17 +1,9 @@
 import json
 import socket
-import sys
 import urllib.error
 from unittest.mock import MagicMock, patch
 
-from darija_overrides import llm_ollama
-
-
-def _fake_response(payload: dict):
-    cm = MagicMock()
-    cm.__enter__.return_value = MagicMock(read=lambda: None)
-    cm.read = lambda: json.dumps(payload).encode("utf-8")
-    return cm
+from shorts_generator.local import llm as llm_ollama
 
 
 def test_fix_arabic_json_punctuation_makes_json_loads_succeed():
@@ -81,7 +73,7 @@ def test_salvage_truncated_highlights_stops_at_repeated_highlights_key():
 
 
 def test_call_local_llm_sends_prompt_and_returns_normalized_text():
-    with patch("darija_overrides.llm_ollama.urllib.request.urlopen") as mock_urlopen:
+    with patch("shorts_generator.local.llm.urllib.request.urlopen") as mock_urlopen:
         mock_urlopen.return_value.__enter__.return_value = MagicMock(
             read=lambda: b'{"response": "{\\"a\\":\\"x\\"\\u060c\\"b\\":\\"y\\"}"}'
         )
@@ -103,7 +95,7 @@ def test_call_local_llm_salvages_a_truncated_highlights_response():
         '"hook_sentence":"h1","virality_reason":"r1"},'
         '{"title":"t2 cut off mid stri'
     )
-    with patch("darija_overrides.llm_ollama.urllib.request.urlopen") as mock_urlopen:
+    with patch("shorts_generator.local.llm.urllib.request.urlopen") as mock_urlopen:
         mock_urlopen.return_value.__enter__.return_value = MagicMock(
             read=lambda: json.dumps({"response": truncated_response}).encode("utf-8")
         )
@@ -114,7 +106,7 @@ def test_call_local_llm_salvages_a_truncated_highlights_response():
 
 
 def test_call_local_llm_model_override():
-    with patch("darija_overrides.llm_ollama.urllib.request.urlopen") as mock_urlopen:
+    with patch("shorts_generator.local.llm.urllib.request.urlopen") as mock_urlopen:
         mock_urlopen.return_value.__enter__.return_value = MagicMock(
             read=lambda: b'{"response": "ok"}'
         )
@@ -126,27 +118,14 @@ def test_call_local_llm_model_override():
 
 
 def test_call_local_llm_returns_empty_string_on_timeout_instead_of_raising():
-    with patch("darija_overrides.llm_ollama.urllib.request.urlopen") as mock_urlopen:
+    with patch("shorts_generator.local.llm.urllib.request.urlopen") as mock_urlopen:
         mock_urlopen.side_effect = socket.timeout("timed out")
         result = llm_ollama.call_local_llm("some prompt")
     assert result == ""
 
 
 def test_call_local_llm_returns_empty_string_on_connection_error():
-    with patch("darija_overrides.llm_ollama.urllib.request.urlopen") as mock_urlopen:
+    with patch("shorts_generator.local.llm.urllib.request.urlopen") as mock_urlopen:
         mock_urlopen.side_effect = urllib.error.URLError("connection refused")
         result = llm_ollama.call_local_llm("some prompt")
     assert result == ""
-
-
-def test_install_shadows_vendor_llm_module():
-    sys.modules.pop("shorts_generator.local.llm", None)
-    try:
-        llm_ollama.install()
-        assert sys.modules["shorts_generator.local.llm"] is llm_ollama
-        assert (
-            sys.modules["shorts_generator.local.llm"].call_local_llm
-            is llm_ollama.call_local_llm
-        )
-    finally:
-        sys.modules.pop("shorts_generator.local.llm", None)

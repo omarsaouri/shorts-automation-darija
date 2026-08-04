@@ -15,7 +15,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/Users/omarsaouri/Coding/shorts-automation/.venv/bin/python3</string>
-        <string>/Users/omarsaouri/Coding/shorts-automation/publisher.py</string>
+        <string>/Users/omarsaouri/Coding/shorts-automation/src/publisher.py</string>
     </array>
 
     <key>WorkingDirectory</key>

@@ -14,7 +14,7 @@ see _highlight_word). The architecture doc's §3.4 describes per-word
 karaoke-sync highlighting instead; that's not what this does. What this
 *does* do is time each caption card to real speech: cards are built from
 segment["words"] (per-word start/end spans) when the transcript carries
-them — see darija_overrides/transcriber_darija.py's
+them — see shorts_generator.local.transcriber's
 _group_words_into_segments — so a card appears and disappears in sync with
 the words it shows, not on a proportional guess. Segments without "words"
 (currently only the generic-Whisper fallback transcription path) fall back
@@ -201,7 +201,7 @@ def _split_into_cards(segment: Dict) -> List[Dict]:
     caption cards, so each card fits MAX_LINES lines of WORDS_PER_LINE words.
 
     If the segment carries real per-word timestamps (segment["words"], from
-    darija_overrides.transcriber_darija's darija-primary path), each card's
+    shorts_generator.local.transcriber's darija-primary path), each card's
     [start, end] is the actual span of its first/last word, so cards change
     in sync with speech. Otherwise (segment has no "words" — currently only
     the generic-Whisper fallback transcription path, which has no per-word
