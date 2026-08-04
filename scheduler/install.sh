@@ -1,7 +1,7 @@
 #!/bin/bash
 # Installs the three launchd jobs (ingest/publisher/reporter) into
 # ~/Library/LaunchAgents and loads them. Not run automatically by anything —
-# this is a deliberate, manual step (see progress.md's scheduler section for
+# this is a deliberate, manual step (see docs/progress.md's scheduler section for
 # why: starting this for real means unattended YouTube uploads on a cron).
 set -euo pipefail
 

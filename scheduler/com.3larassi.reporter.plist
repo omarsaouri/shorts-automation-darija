@@ -13,7 +13,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/Users/omarsaouri/Coding/shorts-automation/.venv/bin/python3</string>
-        <string>/Users/omarsaouri/Coding/shorts-automation/reporter.py</string>
+        <string>/Users/omarsaouri/Coding/shorts-automation/src/reporter.py</string>
     </array>
 
     <key>WorkingDirectory</key>

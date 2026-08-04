@@ -13,7 +13,7 @@ A single video's processing failure doesn't abort the cycle — processor.py
 already marks that video 'failed' and re-raises (per its own contract);
 this just catches that, logs it, and moves on to the next queued video, same
 "one bad thing doesn't take down the batch" pattern as
-darija_overrides/highlights_chunk_resilience.py.
+shorts_generator.highlights.get_highlights's per-chunk resilience.
 
 qc_gate.run_qc_gate() always runs, even with zero newly-processed videos —
 it also reconsiders 'held' clips from a previous cycle (source-diversity/

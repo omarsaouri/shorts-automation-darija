@@ -262,11 +262,9 @@ erDiagram
 ```
 darija-shorts-automation/
 ├── vendor/
-│   └── ai-youtube-shorts-generator/   # forked base repo (MIT) — do not edit in place,
-│       └── shorts_generator/          # patch via darija_overrides/ instead
-├── darija_overrides/
-│   ├── transcriber_darija.py          # swaps local/transcriber.py's model for Darija fine-tune
-│   └── llm_ollama.py                  # swaps local/llm.py's OpenAI client for Ollama
+│   └── ai-youtube-shorts-generator/   # forked base repo (MIT) — Darija-specific fixes
+│       └── shorts_generator/          # (transcription model, LLM backend, face tracking,
+│                                       #  highlight-chunking) are edited directly in place
 ├── config/
 │   └── channels.yaml          # source channel IDs, thresholds
 ├── raw/                        # downloaded source videos
@@ -277,11 +275,16 @@ darija-shorts-automation/
 ├── reports/
 │   └── {date}.md
 ├── state.db                    # SQLite tracking DB
-├── watcher.py                  # new
-├── processor.py                # new — calls vendor's generate_shorts(), then adds scene detection + captions
-├── qc_gate.py                  # new
-├── publisher.py                 # new
-├── reporter.py                  # new
+├── src/                         # all pipeline stage scripts, sibling-importable
+│   ├── watcher.py               # new
+│   ├── processor.py             # new — calls vendor's generate_shorts(), then adds scene detection + captions
+│   ├── qc_gate.py                # new
+│   ├── publisher.py              # new
+│   ├── reporter.py               # new
+│   └── db.py                    # new — state.db connection helper
+├── docs/                        # architecture doc, progress notes
+├── conftest.py                  # pytest path setup (stays at repo root — must be an ancestor of tests/)
+├── CLAUDE.md                    # stays at repo root — required by tooling
 └── scheduler/                  # launchd plist or crontab entries
 ```
 

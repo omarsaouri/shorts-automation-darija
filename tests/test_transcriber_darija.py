@@ -1,10 +1,9 @@
 import json
 import os
-import sys
 import wave
 from unittest.mock import patch
 
-from darija_overrides import transcriber_darija as td
+from shorts_generator.local import transcriber as td
 
 
 def _segments(*texts):
@@ -113,16 +112,14 @@ def test_group_words_into_segments_skips_empty_and_none_start():
 
 
 def test_extract_audio_wav_invokes_ffmpeg():
-    with patch("darija_overrides.transcriber_darija.subprocess.run") as mock_run:
+    with patch("shorts_generator.local.transcriber.subprocess.run") as mock_run:
         wav_path = td._extract_audio_wav("media.mp4")
 
     cmd = mock_run.call_args[0][0]
     assert cmd[0] == "ffmpeg"
     assert "media.mp4" in cmd
     assert wav_path.endswith(".wav")
-    import os as _os
-
-    _os.remove(wav_path)
+    os.remove(wav_path)
 
 
 def test_run_darija_transcription_windows_wav_groups_words_and_cleans_up():
@@ -257,9 +254,9 @@ def test_transcribe_local_reuses_cache_without_running_model(tmp_path):
     cache_path = tmp_path / "media.json"
     cache_path.write_text(json.dumps(_segments("cached line")), encoding="utf-8")
 
-    with patch.object(td, "_vendor") as mock_vendor:
-        mock_vendor._transcript_cache_path.return_value = tmp_path / "media.srt"
-
+    with patch.object(
+        td, "_transcript_cache_path", return_value=tmp_path / "media.srt"
+    ):
         with patch.object(td, "_run_darija_transcription") as mock_run:
             result = td.transcribe_local(str(media_path))
 
@@ -271,9 +268,9 @@ def test_transcribe_local_falls_back_when_garbled(tmp_path):
     media_path = tmp_path / "media.mp4"
     media_path.write_bytes(b"fake")
 
-    with patch.object(td, "_vendor") as mock_vendor:
-        mock_vendor._transcript_cache_path.return_value = tmp_path / "media.srt"
-
+    with patch.object(
+        td, "_transcript_cache_path", return_value=tmp_path / "media.srt"
+    ):
         with (
             patch.object(
                 td,
@@ -297,9 +294,9 @@ def test_transcribe_local_keeps_darija_output_when_not_garbled(tmp_path):
     media_path.write_bytes(b"fake")
     good = _segments("hello", "how are you")
 
-    with patch.object(td, "_vendor") as mock_vendor:
-        mock_vendor._transcript_cache_path.return_value = tmp_path / "media.srt"
-
+    with patch.object(
+        td, "_transcript_cache_path", return_value=tmp_path / "media.srt"
+    ):
         with (
             patch.object(td, "_run_darija_transcription", return_value=good),
             patch.object(td, "_fallback_transcribe") as mock_fallback,
@@ -311,28 +308,15 @@ def test_transcribe_local_keeps_darija_output_when_not_garbled(tmp_path):
 
 
 def test_fallback_transcribe_forces_large_model_and_restores_default():
-    with patch.object(td, "_vendor") as mock_vendor:
-        mock_vendor.LOCAL_WHISPER_MODEL = "base"
+    td.LOCAL_WHISPER_MODEL = "base"
 
-        def check_model_during_call(media_path, language=None):
-            assert mock_vendor.LOCAL_WHISPER_MODEL == td.FALLBACK_WHISPER_MODEL
-            return _segments("ok")
+    def check_model_during_call(media_path, language=None):
+        assert td.LOCAL_WHISPER_MODEL == td.FALLBACK_WHISPER_MODEL
+        return _segments("ok")
 
-        mock_vendor.transcribe_local.side_effect = check_model_during_call
-
+    with patch.object(
+        td, "_transcribe_local_whisper", side_effect=check_model_during_call
+    ):
         td._fallback_transcribe("media.mp4", None)
 
-        assert mock_vendor.LOCAL_WHISPER_MODEL == "base"
-
-
-def test_install_shadows_vendor_transcriber_module():
-    sys.modules.pop("shorts_generator.local.transcriber", None)
-    try:
-        td.install()
-        assert sys.modules["shorts_generator.local.transcriber"] is td
-        assert (
-            sys.modules["shorts_generator.local.transcriber"].transcribe_local
-            is td.transcribe_local
-        )
-    finally:
-        sys.modules.pop("shorts_generator.local.transcriber", None)
+    assert td.LOCAL_WHISPER_MODEL == "base"
