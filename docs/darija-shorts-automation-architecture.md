@@ -41,7 +41,7 @@ score → crop. Our own code is limited to the pieces that repo doesn't
 provide: the watcher, QC gate, publisher, reporter, scheduler, and the
 Darija/local-model swaps described below.
 
-### What the base repo already gives us (`--mode local`)
+### What the base repo already gives us (local mode — the only mode our fork keeps)
 
 | Base repo module | Does what we need for | Reuse as-is? |
 |---|---|---|
@@ -57,14 +57,17 @@ Darija/local-model swaps described below.
    model load to a Darija fine-tune (`anaszil/whisper-large-v3-turbo-darija` or
    `ychafiqui/whisper-medium-darija`), with generic Whisper-large as fallback.
    This is a config/model-path change plus a fallback-detection wrapper, not a
-   rewrite of the transcription flow itself.
+   rewrite of the transcription flow itself. Implemented as a runtime
+   monkeypatch (`src/darija_overrides/transcriber_darija.py`), not an edit to
+   the vendored file — see CLAUDE.md's Base repository section.
 2. **`local/llm.py` → local LLM instead of OpenAI.** The base repo's local mode
    still calls OpenAI (`OPENAI_API_KEY`, `gpt-4o-mini`) for highlight ranking —
    this is the one paid dependency in their "local" mode and must be replaced
-   to stay fully free. Point this module at Ollama (Qwen2.5 7B/14B) via its
-   local HTTP API instead, keeping the same input/output contract
-   (`highlights.py`'s virality framework and JSON schema) so nothing downstream
-   breaks.
+   to stay fully free. Point this module at Ollama via its local HTTP API
+   instead, keeping the same input/output contract (`highlights.py`'s
+   virality framework and JSON schema) so nothing downstream breaks.
+   Implemented the same way, as a runtime monkeypatch
+   (`src/darija_overrides/llm_ollama.py`).
 3. **`highlights.py` prompt** — extend `HIGHLIGHT_SYSTEM_PROMPT` with Darija/
    Arabic-script framing and code-switch (Darija/French) examples so scoring
    doesn't default to MSA reasoning.
@@ -78,10 +81,11 @@ Darija/local-model swaps described below.
 
 ### Not used from the base repo
 
-- API mode (`--mode api`, MuAPI-backed) — paid, skip entirely; we only use
-  `--mode local`.
+- API mode (MuAPI-backed) — paid, skip entirely; we only use local mode.
 - `shorts_generator/muapi.py`, `downloader.py` (API-mode), `transcriber.py`
-  (API-mode), `clipper.py` (API-mode) — all MuAPI-backed, not needed.
+  (API-mode), `clipper.py` (API-mode) — all MuAPI-backed. Deleted outright
+  from `src/shorts_generator/`, along with the `mode` argument on
+  `generate_shorts(...)` and `main.py`'s `--mode` flag — not needed.
 
 ---
 
@@ -261,10 +265,6 @@ erDiagram
 
 ```
 darija-shorts-automation/
-├── vendor/
-│   └── ai-youtube-shorts-generator/   # forked base repo (MIT) — Darija-specific fixes
-│       └── shorts_generator/          # (transcription model, LLM backend, face tracking,
-│                                       #  highlight-chunking) are edited directly in place
 ├── config/
 │   └── channels.yaml          # source channel IDs, thresholds
 ├── raw/                        # downloaded source videos
@@ -275,12 +275,20 @@ darija-shorts-automation/
 ├── reports/
 │   └── {date}.md
 ├── state.db                    # SQLite tracking DB
-├── src/                         # all pipeline stage scripts, sibling-importable
+├── src/                         # everything the pipeline runs, sibling-importable
+│   ├── shorts_generator/        # forked base repo (MIT), committed directly — pristine,
+│   │   └── local/               # unedited copy of upstream (minus the deleted paid-API files)
+│   ├── darija_overrides/        # Darija-specific monkeypatches over shorts_generator
+│   │   └── ...                  # (Ollama LLM swap, Darija transcriber, face-tracking
+│   │                            #  stability, scene-cut snapping, highlight fixes)
 │   ├── watcher.py               # new
 │   ├── processor.py             # new — calls vendor's generate_shorts(), then adds scene detection + captions
 │   ├── qc_gate.py                # new
 │   ├── publisher.py              # new
 │   ├── reporter.py               # new
+│   ├── captioner.py              # new
+│   ├── main.py                   # manual CLI — run generate_shorts() on one video, no state.db
+│   ├── run_ingest.py             # scheduler entry point — watcher -> processor -> qc_gate chain
 │   └── db.py                    # new — state.db connection helper
 ├── docs/                        # architecture doc, progress notes
 ├── conftest.py                  # pytest path setup (stays at repo root — must be an ancestor of tests/)

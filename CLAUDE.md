@@ -15,12 +15,12 @@ doc, ask before proceeding rather than picking one silently.
 We do **not** build the download/transcribe/score/crop core from scratch.
 That logic is forked/vendored from
 **[SamurAIGPT/AI-Youtube-Shorts-Generator](https://github.com/SamurAIGPT/AI-Youtube-Shorts-Generator)**
-(MIT license) at `vendor/ai-youtube-shorts-generator/`. See architecture doc
-§2 for the full reuse table. In short:
+(MIT license) at `src/shorts_generator/`. See architecture doc §2 for the
+full reuse table. In short:
 
 - **Reuse as-is:** `local/downloader.py` (yt-dlp), `pipeline.py`
-  (orchestration — call `generate_shorts(mode="local")` rather than
-  reimplementing its flow).
+  (orchestration — call `generate_shorts(...)` rather than reimplementing
+  its flow).
 - **Reuse, behavior overridden at runtime via `src/darija_overrides/`:**
   `local/transcriber.py` (Darija fine-tune, faster-whisper as fallback
   only), `local/llm.py` (Ollama instead of OpenAI/Gemini), `local/clipper.py`
@@ -29,25 +29,27 @@ That logic is forked/vendored from
   bounds, per-chunk failure resilience on top of the original virality
   prompt/scoring). See each override module's docstring in
   `src/darija_overrides/` for the exact vendor function it patches and why.
-  The MuAPI-backed paid-API half of the base repo (`clipper.py`,
-  `downloader.py`, `transcriber.py` at the package root, `muapi.py`, and
-  `main.py --mode api`) is still present in vendor but never reachable —
-  `processor.py` always calls `generate_shorts(mode="local")` — and should
-  be deleted outright as dead weight, not reused.
 - **Net new, not in the base repo at all:** channel watcher, scene detection,
   caption burn-in, QC gate, publisher, reporter, scheduler.
 
-`vendor/ai-youtube-shorts-generator/` is committed directly (no longer a git
-submodule), but it stays a pristine, unedited copy of upstream — all
-Darija-specific behavior (Ollama LLM swap, Darija transcriber, face-tracking
-stability, scene-cut snapping, highlight chunking/duration/retry fixes)
-lives in `src/darija_overrides/` as runtime monkeypatches, one module per
-fix, each with an `install()` that's called from `processor.py` before
-`generate_shorts(mode="local")` runs. This keeps the diff against upstream
-at zero, so re-pulling a newer vendor version (if ever needed) can't
-silently clobber our fixes. Editing the vendored files in place is
-permitted if a fix genuinely can't be done as a monkeypatch, but prefer the
-override layer.
+The MuAPI-backed paid-API half of the base repo (`clipper.py`,
+`downloader.py`, `transcriber.py` at the package root, `muapi.py`, and
+`main.py --mode api`) was deleted outright — never reachable under the
+no-paid-APIs constraint below, so it wasn't "reuse," it was dead weight.
+`generate_shorts(...)` no longer takes a `mode` argument at all; local is
+the only mode there is now.
+
+`src/shorts_generator/` is committed directly (no longer a git submodule),
+but stays a pristine, unedited copy of upstream (minus the deleted
+paid-API files) — all Darija-specific behavior (Ollama LLM swap, Darija
+transcriber, face-tracking stability, scene-cut snapping, highlight
+chunking/duration/retry fixes) lives in `src/darija_overrides/` as runtime
+monkeypatches, one module per fix, each with an `install()` that's called
+from `processor.py` before `generate_shorts(...)` runs. This keeps the
+diff against upstream at zero, so re-pulling a newer vendor version (if
+ever needed) can't silently clobber our fixes. Editing `shorts_generator/`
+files in place is permitted if a fix genuinely can't be done as a
+monkeypatch, but prefer the override layer.
 
 ## Environment
 
@@ -106,11 +108,12 @@ doesn't build on Apple Silicon, switching to Y") rather than swapping silently.
 
 ## Folder structure
 
-Follow the layout in architecture doc §10 (`vendor/`, `config/`, `raw/`,
-`clips/`, `reports/`, `state.db`, pipeline stage scripts under `src/`, and
-docs under `docs/`). Keep each new stage as a separate, independently
-runnable script rather than one monolithic file — this matches how the
-scheduler invokes them.
+Follow the layout in architecture doc §10 (`config/`, `raw/`, `clips/`,
+`reports/`, `state.db`, and everything else — pipeline stage scripts,
+`shorts_generator/`, `darija_overrides/` — under `src/`, docs under
+`docs/`). Keep each new stage as a separate, independently runnable script
+rather than one monolithic file — this matches how the scheduler invokes
+them.
 
 ## Workflow expectations
 
@@ -145,8 +148,9 @@ scheduler invokes them.
     actual YouTube API call mocked — tests must never hit the real API.
   - `reporter`: report generation from a seeded `state.db` snapshot, checked
     against an expected markdown fixture.
-- The vendored base repo (`vendor/ai-youtube-shorts-generator/`) is a
-  pristine, untouched copy of upstream — don't write unit tests for it.
+- The vendored base repo (`src/shorts_generator/`) is a pristine, untouched
+  copy of upstream (minus the deleted paid-API files) — don't write unit
+  tests for it.
   `src/darija_overrides/` is ours to test: each module (`llm_ollama.py`,
   `transcriber_darija.py`, `clipper_stable.py`, `scene_snap_crop.py`,
   `highlights_chunking.py`, `highlights_duration_filter.py`,
@@ -199,8 +203,8 @@ scheduler invokes them.
 - Do not hardcode API keys, tokens, or channel IDs in scripts — use
   `config/channels.yaml` and environment variables / a local `.env` (gitignored).
 - Do not commit `raw/`, `clips/`, `state.db`, or any downloaded video content.
-  `vendor/ai-youtube-shorts-generator/` is the exception — it's committed
-  directly as owned code, not a submodule.
+  `src/shorts_generator/` is the exception — it's committed directly as
+  owned code, not a submodule.
 
 # Notion Workspace Guide
 

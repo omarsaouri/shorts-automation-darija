@@ -6,15 +6,12 @@ Logic ported from ViralVadoo's transcript_analysis/highlight_generator.py:
   - virality-criteria prompt
   - score-based dedupe with overlap suppression
 
-The LLM call is pluggable via the `llm_fn` argument so the same prompts can
-drive either MuAPI (default, --mode api) or a direct local LLM client
-(--mode local).
+The LLM call is pluggable via the `llm_fn` argument — the local LLM client
+(src/darija_overrides/llm_ollama.py) is the only one this codebase uses.
 """
 import json
 import re
-from typing import Callable, Dict, List, Optional
-
-from . import muapi
+from typing import Callable, Dict, List
 
 
 LLMFn = Callable[[str], str]
@@ -64,35 +61,7 @@ Respond ONLY with valid JSON (no markdown, no explanation):
 CHUNK_SIZE_SECONDS = 1200       # 20-min chunks for long videos
 LONG_VIDEO_THRESHOLD = 1800     # chunk videos longer than 30 min
 CHUNK_OVERLAP_SECONDS = 60
-GPT_CALL_TIMEOUT_SECONDS = 300  # cap LLM polls at 5 min — a wedged call should fail fast
 MAX_HIGHLIGHT_API_ATTEMPTS = 3
-
-
-def call_muapi_llm(prompt: str) -> str:
-    """Default LLM backend: MuAPI gpt-5-mini."""
-    result = muapi.run(
-        "gpt-5-mini",
-        {"prompt": prompt},
-        label="gpt-5-mini",
-        timeout=GPT_CALL_TIMEOUT_SECONDS,
-    )
-
-    outputs = result.get("outputs")
-    if isinstance(outputs, list) and outputs and isinstance(outputs[0], str) and outputs[0].strip():
-        return outputs[0]
-
-    for key in ("output", "text", "response", "result", "content"):
-        v = result.get(key)
-        if isinstance(v, str) and v.strip():
-            return v
-        if isinstance(v, dict):
-            inner = v.get("text") or v.get("content")
-            if isinstance(inner, str) and inner.strip():
-                return inner
-        if isinstance(v, list) and v and isinstance(v[0], str):
-            return v[0]
-
-    raise RuntimeError(f"Could not extract gpt-5-mini text from response: {result}")
 
 
 def _parse_json_loose(raw: str) -> Dict:
@@ -160,7 +129,7 @@ def _sanitize_highlights(raw_highlights: object, duration: float) -> List[Dict]:
     return cleaned
 
 
-def detect_content_type(transcript: Dict, llm_fn: LLMFn = call_muapi_llm) -> Dict[str, str]:
+def detect_content_type(transcript: Dict, llm_fn: LLMFn) -> Dict[str, str]:
     segments = transcript.get("segments", [])
     sample = " ".join(s["text"] for s in segments[:25])[:3000]
     prompt = f"{CONTENT_TYPE_PROMPT}\n\nTranscript sample:\n{sample}"
@@ -202,8 +171,8 @@ def call_highlight_api(
     content_info: Dict,
     duration: float,
     num_clips: int,
+    llm_fn: LLMFn,
     is_chunk: bool = False,
-    llm_fn: LLMFn = call_muapi_llm,
 ) -> Dict:
     # Ask for ~2× the user's target so dedupe has headroom, but cap so the model
     # doesn't have to generate a huge JSON payload (which times out gpt-5-mini).
@@ -271,15 +240,14 @@ def dedupe_highlights(highlights: List[Dict]) -> List[Dict]:
 
 def get_highlights(
     transcript: Dict,
+    llm_fn: LLMFn,
     num_clips: int = 3,
-    llm_fn: Optional[LLMFn] = None,
 ) -> Dict:
     """Main entry point — returns {highlights: [...]} sorted by score.
 
-    `llm_fn` swaps the underlying LLM. Defaults to MuAPI gpt-5-mini; local
-    mode passes in a local LLM-backed callable.
+    `llm_fn` swaps the underlying LLM — the local LLM client is the only
+    one this codebase uses.
     """
-    llm_fn = llm_fn or call_muapi_llm
     duration = transcript.get("duration", 0)
     content_info = detect_content_type(transcript, llm_fn=llm_fn)
     print(f"[highlights] content={content_info.get('content_type')} density={content_info.get('density')} duration={duration:.0f}s", flush=True)

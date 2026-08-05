@@ -16,7 +16,6 @@ def _seed_source_video(conn, video_id="abc123"):
 
 def _fake_generate_shorts_result():
     return {
-        "mode": "local",
         "source_video_url": "/raw/abc123.mp4",
         "transcript": {
             "duration": 120.0,
@@ -63,7 +62,6 @@ def test_process_video_captions_successful_clips_and_skips_failed_ones():
     mock_generate.assert_called_once()
     assert mock_generate.call_args.args[0] == "https://www.youtube.com/watch?v=abc123"
     kwargs = mock_generate.call_args.kwargs
-    assert kwargs["mode"] == "local"
     assert kwargs["num_clips"] == 2
     assert kwargs["aspect_ratio"] == "9:16"
 

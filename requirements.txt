@@ -3,12 +3,14 @@ pytest==9.1.1
 black==26.5.1
 ruff==0.15.21
 
-# vendor/ai-youtube-shorts-generator local-mode deps (--mode local only; we
-# never use its api mode / MuAPI). local/llm.py's OpenAI/Gemini call is
-# overridden with Ollama (src/darija_overrides/llm_ollama.py) and
-# local/transcriber.py's faster-whisper is overridden with a Darija
-# fine-tune (src/darija_overrides/transcriber_darija.py) — faster-whisper
-# stays a dependency too, since the transcriber override falls back to it.
+# src/shorts_generator (vendored base repo, MIT) deps — its paid MuAPI mode
+# was deleted outright, this is local-only now. config.py needs dotenv;
+# local/llm.py's OpenAI/Gemini call is overridden with Ollama
+# (src/darija_overrides/llm_ollama.py) and local/transcriber.py's
+# faster-whisper is overridden with a Darija fine-tune
+# (src/darija_overrides/transcriber_darija.py) — faster-whisper stays a
+# dependency too, since the transcriber override falls back to it.
+python-dotenv>=1.0
 yt-dlp>=2024.1.1
 faster-whisper>=1.0.0
 # Pinned <5: opencv-python 5.0.0.93 ships without cv2.CascadeClassifier on

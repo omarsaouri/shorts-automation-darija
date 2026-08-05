@@ -1,14 +1,15 @@
 """Processor (architecture doc §4 pipeline detail).
 
-Wraps vendor's `generate_shorts(mode="local")` — download, transcription,
-highlight scoring, and scene-cut-snapped vertical crop all happen inside
-that one call, per CLAUDE.md's "call generate_shorts(...) rather than
-reimplementing its flow" — and adds the one net-new step generate_shorts
-doesn't do: caption burn-in on each rendered clip. Scene detection is not
-called directly here either; `darija_overrides.scene_snap_crop` intersects
-it into generate_shorts's internal crop step by monkeypatching
-`crop_highlights_local` (see that module's docstring for why that's the
-only way to do it without reimplementing pipeline.py's flow).
+Wraps vendor's `generate_shorts(...)` (local-only, no paid-API mode) —
+download, transcription, highlight scoring, and scene-cut-snapped vertical
+crop all happen inside that one call, per CLAUDE.md's "call
+generate_shorts(...) rather than reimplementing its flow" — and adds the
+one net-new step generate_shorts doesn't do: caption burn-in on each
+rendered clip. Scene detection is not called directly here either;
+`darija_overrides.scene_snap_crop` intersects it into generate_shorts's
+internal crop step by monkeypatching `crop_highlights_local` (see that
+module's docstring for why that's the only way to do it without
+reimplementing pipeline.py's flow).
 
 Reads/writes state.db: `source_videos` (status transitions) and `clips`
 (one row per rendered clip, ready for `qc_gate.py` to pick up next).
@@ -17,20 +18,14 @@ Reads/writes state.db: `source_videos` (status transitions) and `clips`
 import argparse
 import hashlib
 import logging
-import sys
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-_VENDOR_PATH = Path(__file__).parent.parent / "vendor" / "ai-youtube-shorts-generator"
-if str(_VENDOR_PATH) not in sys.path:
-    sys.path.insert(0, str(_VENDOR_PATH))
-
-import captioner  # noqa: E402
-from db import get_connection  # noqa: E402
-from darija_overrides import (  # noqa: E402
+import captioner
+from db import get_connection
+from darija_overrides import (
     clipper_stable,
     highlights_chunk_resilience,
     highlights_chunking,
@@ -39,12 +34,12 @@ from darija_overrides import (  # noqa: E402
     scene_snap_crop,
     transcriber_darija,
 )
-from shorts_generator.pipeline import generate_shorts  # noqa: E402
+from shorts_generator.pipeline import generate_shorts
 
 
 def install_overrides() -> None:
-    """Install every darija_overrides patch generate_shorts(mode="local")
-    needs. Idempotent — each module's own install() only captures the
+    """Install every darija_overrides patch generate_shorts(...) needs.
+    Idempotent — each module's own install() only captures the
     original vendor function once, so calling this per-video is cheap and
     safe.
     """
@@ -142,8 +137,8 @@ def process_video(
     language: Optional[str] = None,
     conn=None,
 ) -> List[Dict]:
-    """Run one source video through generate_shorts(mode="local") + caption
-    burn-in.
+    """Run one source video through generate_shorts(...) (local-only) +
+    caption burn-in.
 
     Inputs: video_id, YouTube video ID (source_videos.video_id). num_clips,
         aspect_ratio, language — forwarded to generate_shorts. conn,
@@ -173,7 +168,6 @@ def process_video(
             num_clips=num_clips,
             aspect_ratio=aspect_ratio,
             language=language,
-            mode="local",
         )
     except Exception:
         conn.execute(
@@ -193,8 +187,8 @@ def process_video(
     for i, short in enumerate(captioned_shorts, 1):
         _record_clip(conn, video_id, i, short, now)
 
-    # generate_shorts(mode="local") downloads, transcribes, scores, crops,
-    # and (via the scene-snap override) scene-detects in one call, so
+    # generate_shorts(...) downloads, transcribes, scores, crops, and (via
+    # the scene-snap override) scene-detects in one call, so
     # per-step timestamps aren't available — downloaded_at is set here,
     # once the whole run (including caption burn-in) has succeeded.
     conn.execute(

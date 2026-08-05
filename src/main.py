@@ -1,7 +1,12 @@
-"""CLI entry point.
+"""Manual CLI entry point — run the full generate_shorts(...) pipeline
+(with Darija overrides installed) against one video, no state.db involved.
+
+Per CLAUDE.md's testing requirements: full-pipeline integration testing on
+a real video is a manual/local step, not part of the automated pytest
+suite. This script is that manual step.
 
 Usage:
-    python main.py "https://www.youtube.com/watch?v=..." \
+    python src/main.py "https://www.youtube.com/watch?v=..." \
         --num-clips 3 --aspect-ratio 9:16
 """
 import argparse
@@ -15,24 +20,40 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+from darija_overrides import (
+    clipper_stable,
+    highlights_chunk_resilience,
+    highlights_chunking,
+    highlights_duration_filter,
+    llm_ollama,
+    scene_snap_crop,
+    transcriber_darija,
+)
 from shorts_generator import generate_shorts
 
 
+def install_overrides() -> None:
+    """Same wiring as processor.install_overrides() — see that function."""
+    llm_ollama.install()
+    transcriber_darija.install()
+    clipper_stable.install()
+    highlights_chunking.install()
+    highlights_duration_filter.install()
+    highlights_chunk_resilience.install()
+    scene_snap_crop.install()
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="AI YouTube Shorts Generator")
+    parser = argparse.ArgumentParser(description="Darija AI YouTube Shorts Generator")
     parser.add_argument("url", help="YouTube URL, file:// URL, or local file path")
-    parser.add_argument(
-        "--mode",
-        choices=["api", "local"],
-        default="api",
-        help="api (default, MuAPI) or local (remote URL, file://, or local path + faster-whisper + LLM provider + ffmpeg).",
-    )
     parser.add_argument("--num-clips", type=int, default=3, help="How many shorts to render (default: 3)")
     parser.add_argument("--aspect-ratio", default="9:16", help="Output aspect ratio (default: 9:16)")
     parser.add_argument("--format", default="720", help="Source download resolution: 360 / 480 / 720 / 1080 (default: 720)")
-    parser.add_argument("--language", default=None, help="Force Whisper language code, e.g. 'en' (default: auto-detect)")
+    parser.add_argument("--language", default=None, help="Force Whisper language code, e.g. 'ar' (default: auto-detect)")
     parser.add_argument("--output-json", default=None, help="Write the full result JSON to this path")
     args = parser.parse_args()
+
+    install_overrides()
 
     try:
         result = generate_shorts(
@@ -41,14 +62,12 @@ def main() -> int:
             aspect_ratio=args.aspect_ratio,
             download_format=args.format,
             language=args.language,
-            mode=args.mode,
         )
     except Exception as e:
         print(f"\nFAILED: {e}", file=sys.stderr)
         return 1
 
     print("\n" + "=" * 72)
-    print(f"Mode:          {result.get('mode', args.mode)}")
     print(f"Source video:  {result['source_video_url']}")
     print(f"Highlights:    {len(result['highlights'])} candidates → kept top {len(result['shorts'])}")
     print("=" * 72)

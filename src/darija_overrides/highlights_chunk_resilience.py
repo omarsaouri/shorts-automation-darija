@@ -34,7 +34,7 @@ with `highlights_chunking.py` / `highlights_duration_filter.py` regardless of
 install order.
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import shorts_generator.highlights as _highlights
 import shorts_generator.pipeline as _pipeline
@@ -54,14 +54,13 @@ _original_get_highlights = None
 
 def get_highlights_resilient(
     transcript: Dict,
+    llm_fn: _highlights.LLMFn,
     num_clips: int = 3,
-    llm_fn: Optional[_highlights.LLMFn] = None,
 ) -> Dict:
     """Same contract as vendored `get_highlights`, chunk failures don't abort the run.
 
     Reads no `state.db` tables. Writes none.
     """
-    llm_fn = llm_fn or _highlights.call_muapi_llm
     duration = transcript.get("duration", 0)
 
     if duration < _highlights.LONG_VIDEO_THRESHOLD:
