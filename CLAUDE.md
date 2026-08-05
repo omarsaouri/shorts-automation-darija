@@ -19,28 +19,35 @@ That logic is forked/vendored from
 §2 for the full reuse table. In short:
 
 - **Reuse as-is:** `local/downloader.py` (yt-dlp), `pipeline.py`
-  (orchestration — call `generate_shorts(...)` rather than reimplementing
-  its flow).
-- **Reuse with modification:** `local/transcriber.py` (Darija fine-tune,
-  faster-whisper as fallback only), `local/llm.py` (Ollama instead of
-  OpenAI/Gemini), `local/clipper.py` (debounced face tracking + scene-cut
-  snapping on top of the original ffmpeg+OpenCV crop), `highlights.py`
-  (chunk-timestamp rebasing, duration bounds, per-chunk failure resilience
-  on top of the original virality prompt/scoring). The MuAPI-backed
-  paid-API half of the base repo (`clipper.py`, `downloader.py`,
-  `transcriber.py` at the package root, `muapi.py`) was deleted outright —
-  never reachable under CLAUDE.md's no-paid-APIs constraint, so it wasn't
-  "reuse," it was dead weight.
+  (orchestration — call `generate_shorts(mode="local")` rather than
+  reimplementing its flow).
+- **Reuse, behavior overridden at runtime via `src/darija_overrides/`:**
+  `local/transcriber.py` (Darija fine-tune, faster-whisper as fallback
+  only), `local/llm.py` (Ollama instead of OpenAI/Gemini), `local/clipper.py`
+  (debounced face tracking + scene-cut snapping on top of the original
+  ffmpeg+OpenCV crop), `highlights.py` (chunk-timestamp rebasing, duration
+  bounds, per-chunk failure resilience on top of the original virality
+  prompt/scoring). See each override module's docstring in
+  `src/darija_overrides/` for the exact vendor function it patches and why.
+  The MuAPI-backed paid-API half of the base repo (`clipper.py`,
+  `downloader.py`, `transcriber.py` at the package root, `muapi.py`, and
+  `main.py --mode api`) is still present in vendor but never reachable —
+  `processor.py` always calls `generate_shorts(mode="local")` — and should
+  be deleted outright as dead weight, not reused.
 - **Net new, not in the base repo at all:** channel watcher, scene detection,
   caption burn-in, QC gate, publisher, reporter, scheduler.
 
-Editing the vendored repo in place is permitted. All Darija-specific fixes
-that used to live in `darija_overrides/` as runtime monkeypatches have been
-merged directly into the vendor files they modified — there is no separate
-override layer anymore, and no upstream-fork divergence to protect against.
 `vendor/ai-youtube-shorts-generator/` is committed directly (no longer a git
-submodule) — we own this code outright and edit it like any other file in
-the repo.
+submodule), but it stays a pristine, unedited copy of upstream — all
+Darija-specific behavior (Ollama LLM swap, Darija transcriber, face-tracking
+stability, scene-cut snapping, highlight chunking/duration/retry fixes)
+lives in `src/darija_overrides/` as runtime monkeypatches, one module per
+fix, each with an `install()` that's called from `processor.py` before
+`generate_shorts(mode="local")` runs. This keeps the diff against upstream
+at zero, so re-pulling a newer vendor version (if ever needed) can't
+silently clobber our fixes. Editing the vendored files in place is
+permitted if a fix genuinely can't be done as a monkeypatch, but prefer the
+override layer.
 
 ## Environment
 
@@ -138,15 +145,16 @@ scheduler invokes them.
     actual YouTube API call mocked — tests must never hit the real API.
   - `reporter`: report generation from a seeded `state.db` snapshot, checked
     against an expected markdown fixture.
-- The vendored base repo (`vendor/ai-youtube-shorts-generator/`) is treated as
-  a third-party dependency in the parts we haven't touched — don't write new
-  unit tests for untouched vendor internals. But `local/clipper.py`,
-  `local/llm.py`, `local/transcriber.py`, `highlights.py`, and `pipeline.py`
-  now carry our Darija-specific logic directly (formerly `darija_overrides/`
-  monkeypatches), so they're ours to test: keep verifying that the Darija
-  transcriber and Ollama LLM client honor the same input/output contract the
-  original vendor functions had, so they stay drop-in-compatible rather than
-  a silent fork of the whole pipeline's expectations.
+- The vendored base repo (`vendor/ai-youtube-shorts-generator/`) is a
+  pristine, untouched copy of upstream — don't write unit tests for it.
+  `src/darija_overrides/` is ours to test: each module (`llm_ollama.py`,
+  `transcriber_darija.py`, `clipper_stable.py`, `scene_snap_crop.py`,
+  `highlights_chunking.py`, `highlights_duration_filter.py`,
+  `highlights_chunk_resilience.py`) patches one specific vendor function, so
+  its tests should verify both the patched behavior and that its
+  `install()` correctly shadows/monkeypatches the vendor function it
+  targets — keeping it drop-in-compatible with the original vendor contract
+  rather than a silent fork of the whole pipeline's expectations.
 - Use `pytest`. New stage logic should not be merged without a matching test;
   if something is genuinely hard to test (e.g. actual transcription output
   quality), say so explicitly rather than skipping silently.
