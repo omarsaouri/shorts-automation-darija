@@ -49,7 +49,7 @@ DEFAULT_BOX_COLOR = "&H60000000"  # semi-transparent black card background
 # alongside captions in the same ffmpeg call. Assets + their generator live
 # in assets/brand/ (generate.py — one-off design script, not part of the
 # pipeline, only needed again if the branding changes).
-BRAND_LOGO_PATH = Path(__file__).parent / "assets" / "brand" / "overlay_ribbon.png"
+BRAND_LOGO_PATH = Path(__file__).parent.parent / "assets" / "brand" / "overlay_ribbon.png"
 BRAND_BORDER_COLOR = "0xFF6B35"  # brand orange
 BRAND_BORDER_THICKNESS_RATIO = 1 / 180  # of video height
 BRAND_LOGO_WIDTH_RATIO = 0.42  # of video width

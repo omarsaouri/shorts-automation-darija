@@ -101,8 +101,8 @@ def load_channel_ids(config_path: Path) -> list[str]:
 
 
 def run(
-    config_path: Path = Path(__file__).parent / "config" / "channels.yaml",
-    db_path: Path = Path(__file__).parent / "state.db",
+    config_path: Path = Path(__file__).parent.parent / "config" / "channels.yaml",
+    db_path: Path = Path(__file__).parent.parent / "state.db",
 ) -> list[str]:
     """Poll all configured channels and enqueue newly discovered videos.
 

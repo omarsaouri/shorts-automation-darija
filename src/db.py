@@ -7,7 +7,7 @@ rather than opening its own connection, so schema stays in one place.
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "state.db"
+DB_PATH = Path(__file__).parent.parent / "state.db"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS source_videos (

@@ -39,11 +39,11 @@ logger = logging.getLogger(__name__)
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 CLIENT_SECRETS_PATH = Path(
     os.environ.get("YOUTUBE_CLIENT_SECRETS_PATH")
-    or Path(__file__).parent / "config" / "youtube_client_secret.json"
+    or Path(__file__).parent.parent / "config" / "youtube_client_secret.json"
 )
 TOKEN_PATH = Path(
     os.environ.get("YOUTUBE_TOKEN_PATH")
-    or Path(__file__).parent / "config" / "youtube_token.json"
+    or Path(__file__).parent.parent / "config" / "youtube_token.json"
 )
 
 QUOTA_COST_PER_UPLOAD = 1600
@@ -52,7 +52,7 @@ MAX_CONSECUTIVE_FAILURES = 3
 DEFAULT_CATEGORY_ID = "24"  # Entertainment
 CHANNEL_PROFILE_PATH = Path(
     os.environ.get("CHANNEL_PROFILE_PATH")
-    or Path(__file__).parent / "config" / "channel_profile.yaml"
+    or Path(__file__).parent.parent / "config" / "channel_profile.yaml"
 )
 
 
