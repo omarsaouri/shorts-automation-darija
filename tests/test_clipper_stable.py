@@ -70,6 +70,21 @@ def test_alternating_outliers_never_accumulate_into_a_switch():
     assert tracker.last_center == before
 
 
+def test_select_closest_face_returns_none_for_no_faces():
+    assert cs._select_closest_face([], last_center=None) is None
+    assert cs._select_closest_face([], last_center=(10, 10)) is None
+
+
+def test_select_closest_face_picks_largest_on_first_detection():
+    faces = [(10, 10, 500), (500, 500, 9000)]
+    assert cs._select_closest_face(faces, last_center=None) == (500, 500)
+
+
+def test_select_closest_face_picks_nearest_to_last_center():
+    faces = [(10, 10, 500), (500, 500, 9000)]
+    assert cs._select_closest_face(faces, last_center=(20, 20)) == (10, 10)
+
+
 def test_install_patches_vendor_reframe_vertical():
     import shorts_generator.local.clipper as vendor_clipper
 

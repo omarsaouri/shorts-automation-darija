@@ -6,6 +6,7 @@ reports/
 output/
 logs/
 state.db
+.cache/
 config/youtube_client_secret.json
 config/youtube_token.json
 config/youtube_analytics_token.json
