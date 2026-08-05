@@ -18,6 +18,14 @@ faster-whisper>=1.0.0
 # tracking. 4.x has the full objdetect bindings.
 opencv-python<5
 
+# src/darija_overrides/clipper_stable.py: MediaPipe Face Detection replaced
+# the Haar cascade (too many false positives/negatives on real footage).
+# Pulls in opencv-contrib-python as a transitive dep alongside the pinned
+# opencv-python<5 above — both provide the cv2 namespace but this resolves
+# without conflict; only opencv-python's CascadeClassifier-capable build is
+# relied on directly, mediapipe only needs cv2.VideoCapture-level basics.
+mediapipe
+
 # src/darija_overrides/transcriber_darija.py deps:
 # anaszil/whisper-large-v3-turbo-darija is a LoRA adapter (no
 # CTranslate2/GGUF conversion exists), so it loads via plain
