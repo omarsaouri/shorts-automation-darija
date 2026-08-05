@@ -47,6 +47,7 @@ def test_process_video_captions_successful_clips_and_skips_failed_ones():
     _seed_source_video(conn)
 
     with (
+        patch("processor.install_overrides") as mock_install,
         patch(
             "processor.generate_shorts", return_value=_fake_generate_shorts_result()
         ) as mock_generate,
@@ -57,6 +58,7 @@ def test_process_video_captions_successful_clips_and_skips_failed_ones():
     ):
         result = processor.process_video("abc123", num_clips=2, conn=conn)
 
+    mock_install.assert_called_once()
     mock_generate.assert_called_once()
     assert mock_generate.call_args.args[0] == "https://www.youtube.com/watch?v=abc123"
     kwargs = mock_generate.call_args.kwargs
@@ -81,6 +83,7 @@ def test_process_video_writes_clips_rows_with_correct_status():
     _seed_source_video(conn)
 
     with (
+        patch("processor.install_overrides"),
         patch("processor.generate_shorts", return_value=_fake_generate_shorts_result()),
         patch(
             "processor.captioner.burn_captions",
@@ -108,6 +111,7 @@ def test_process_video_updates_source_video_status_to_captioned():
     _seed_source_video(conn)
 
     with (
+        patch("processor.install_overrides"),
         patch("processor.generate_shorts", return_value=_fake_generate_shorts_result()),
         patch("processor.captioner.burn_captions", return_value="/out.mp4"),
     ):
@@ -124,8 +128,9 @@ def test_process_video_marks_failed_on_generate_shorts_error():
     conn = get_connection(Path(":memory:"))
     _seed_source_video(conn)
 
-    with patch(
-        "processor.generate_shorts", side_effect=RuntimeError("download failed")
+    with (
+        patch("processor.install_overrides"),
+        patch("processor.generate_shorts", side_effect=RuntimeError("download failed")),
     ):
         try:
             processor.process_video("abc123", conn=conn)
@@ -146,9 +151,25 @@ def test_process_video_skips_captioning_when_clip_url_missing():
     result["shorts"] = [result["shorts"][1]]  # only the crop-failed one
 
     with (
+        patch("processor.install_overrides"),
         patch("processor.generate_shorts", return_value=result),
         patch("processor.captioner.burn_captions") as mock_burn,
     ):
         processor.process_video("abc123", conn=conn)
 
     mock_burn.assert_not_called()
+
+
+def test_install_overrides_installs_every_darija_override():
+    with (
+        patch("processor.llm_ollama.install") as m1,
+        patch("processor.transcriber_darija.install") as m2,
+        patch("processor.clipper_stable.install") as m3,
+        patch("processor.highlights_chunking.install") as m4,
+        patch("processor.highlights_duration_filter.install") as m5,
+        patch("processor.scene_snap_crop.install") as m6,
+    ):
+        processor.install_overrides()
+
+    for mock in (m1, m2, m3, m4, m5, m6):
+        mock.assert_called_once()

@@ -35,10 +35,10 @@ logger = logging.getLogger(__name__)
 ANALYTICS_SCOPES = ["https://www.googleapis.com/auth/yt-analytics.readonly"]
 ANALYTICS_TOKEN_PATH = Path(
     os.environ.get("YOUTUBE_ANALYTICS_TOKEN_PATH")
-    or Path(__file__).parent / "config" / "youtube_analytics_token.json"
+    or Path(__file__).parent.parent / "config" / "youtube_analytics_token.json"
 )
 
-REPORTS_DIR = Path(__file__).parent / "reports"
+REPORTS_DIR = Path(__file__).parent.parent / "reports"
 
 
 def get_analytics_credentials(

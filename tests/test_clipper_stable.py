@@ -1,18 +1,18 @@
-from shorts_generator.local.clipper import _FaceTracker, REQUIRED_CONSECUTIVE_FRAMES
+from darija_overrides import clipper_stable as cs
 
 
 def test_first_detection_becomes_initial_center():
-    tracker = _FaceTracker(1000, 1000)
+    tracker = cs._FaceTracker(1000, 1000)
     assert tracker.update((500, 500)) == (500, 500)
 
 
 def test_no_detection_at_start_defaults_to_frame_center():
-    tracker = _FaceTracker(1000, 800)
+    tracker = cs._FaceTracker(1000, 800)
     assert tracker.update(None) == (500, 400)
 
 
 def test_small_movement_is_trusted_and_smoothed_immediately():
-    tracker = _FaceTracker(1000, 1000)
+    tracker = cs._FaceTracker(1000, 1000)
     tracker.update((500, 500))
     result = tracker.update((520, 500))  # well within MAX_TRUSTED_JUMP_FRACTION
     assert result != (500, 500)  # moved toward the new detection
@@ -20,14 +20,14 @@ def test_small_movement_is_trusted_and_smoothed_immediately():
 
 
 def test_missing_detection_holds_position_steady():
-    tracker = _FaceTracker(1000, 1000)
+    tracker = cs._FaceTracker(1000, 1000)
     tracker.update((500, 500))
     held = tracker.update(None)
     assert held == tracker.last_center
 
 
 def test_single_frame_false_positive_is_ignored():
-    tracker = _FaceTracker(1000, 1000)
+    tracker = cs._FaceTracker(1000, 1000)
     tracker.update((500, 500))
     before = tracker.last_center
 
@@ -41,12 +41,12 @@ def test_single_frame_false_positive_is_ignored():
 
 
 def test_sustained_jump_is_eventually_trusted():
-    tracker = _FaceTracker(1000, 1000)
+    tracker = cs._FaceTracker(1000, 1000)
     tracker.update((500, 500))
 
     # the same far-away point detected for REQUIRED_CONSECUTIVE_FRAMES in a row
     # (e.g. the subject actually walked across the frame) should be followed
-    for _ in range(REQUIRED_CONSECUTIVE_FRAMES - 1):
+    for _ in range(cs.REQUIRED_CONSECUTIVE_FRAMES - 1):
         result = tracker.update((900, 900))
         assert (
             result == tracker.last_center
@@ -58,7 +58,7 @@ def test_sustained_jump_is_eventually_trusted():
 
 
 def test_alternating_outliers_never_accumulate_into_a_switch():
-    tracker = _FaceTracker(1000, 1000)
+    tracker = cs._FaceTracker(1000, 1000)
     tracker.update((500, 500))
     before = tracker.last_center
 
@@ -68,3 +68,14 @@ def test_alternating_outliers_never_accumulate_into_a_switch():
     tracker.update((990, 10))
     tracker.update((10, 990))
     assert tracker.last_center == before
+
+
+def test_install_patches_vendor_reframe_vertical():
+    import shorts_generator.local.clipper as vendor_clipper
+
+    original = vendor_clipper._reframe_vertical
+    try:
+        cs.install()
+        assert vendor_clipper._reframe_vertical is cs._reframe_vertical
+    finally:
+        vendor_clipper._reframe_vertical = original
