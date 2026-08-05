@@ -38,6 +38,9 @@ Editing the vendored repo in place is permitted. All Darija-specific fixes
 that used to live in `darija_overrides/` as runtime monkeypatches have been
 merged directly into the vendor files they modified — there is no separate
 override layer anymore, and no upstream-fork divergence to protect against.
+`vendor/ai-youtube-shorts-generator/` is committed directly (no longer a git
+submodule) — we own this code outright and edit it like any other file in
+the repo.
 
 ## Environment
 
@@ -187,9 +190,9 @@ scheduler invokes them.
 - Do not add analytics/telemetry calls to third-party services.
 - Do not hardcode API keys, tokens, or channel IDs in scripts — use
   `config/channels.yaml` and environment variables / a local `.env` (gitignored).
-- Do not commit `raw/`, `clips/`, `state.db`, `vendor/`, or any downloaded
-  video content — `vendor/` should be a git submodule or fetched at setup
-  time, not committed as a copy.
+- Do not commit `raw/`, `clips/`, `state.db`, or any downloaded video content.
+  `vendor/ai-youtube-shorts-generator/` is the exception — it's committed
+  directly as owned code, not a submodule.
 
 # Notion Workspace Guide
 
